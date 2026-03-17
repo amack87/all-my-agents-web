@@ -135,7 +135,7 @@ function renderSessions() {
          data-pane="${esc(s.paneId)}"
          data-machine="${esc(s.machine)}"
          data-machine-host="${esc(s.machineHost)}">
-      <div class="status-dot ${s.status}"></div>
+      <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
       <div class="session-info">
         <div class="session-name">${esc(s.name)}</div>
         <div class="session-meta">${esc(s.projectPath || s.currentCommand || s.paneId)}</div>
@@ -200,6 +200,29 @@ function statusLabel(status) {
     unknown: "...",
   };
   return labels[status] || status;
+}
+
+// Returns a CSS color for inactive sessions: blue (#6366f1) fading to dark (#1a1a2e)
+// over 12 hours based on last activity timestamp.
+function activityDotColor(lastActivity) {
+  if (!lastActivity) return "#1a1a2e";
+  const nowSec = Math.floor(Date.now() / 1000);
+  const ageSec = nowSec - lastActivity;
+  const FADE_DURATION = 4 * 60 * 60; // 4 hours in seconds
+  const t = Math.min(ageSec / FADE_DURATION, 1); // 0 = just now, 1 = 12h+ ago
+
+  // Lerp from blue (99,102,241) to dark (26,26,46)
+  const r = Math.round(99 + (26 - 99) * t);
+  const g = Math.round(102 + (26 - 102) * t);
+  const b = Math.round(241 + (46 - 241) * t);
+  return `rgb(${r},${g},${b})`;
+}
+
+function activityDotStyle(session) {
+  // Active statuses keep their existing colors
+  if (session.status === "needsInput" || session.status === "working") return "";
+  const color = activityDotColor(session.lastActivity);
+  return `background:${color}; box-shadow: 0 0 6px ${color};`;
 }
 
 function esc(str) {
@@ -293,12 +316,14 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
     : `/ws/terminal/${encodeURIComponent(sessionName)}`;
   const ws = new WebSocket(`${protocol}//${location.host}${wsPath}`);
 
-  // Frame-batched writer: collects output and writes in one chunk.
-  // After user input (Enter), widens the batch window to catch full
-  // screen redraws (e.g. Claude Code UI transitions) in a single write.
+  // Batched writer: collects all output within a window and writes
+  // as a single chunk. Prevents visible incremental rendering during
+  // screen redraws (Claude Code UI transitions, permission prompts, etc).
+  // 50ms base is imperceptible but catches most multi-message bursts.
   let frameBuf = [];
   let flushTimer = null;
-  let batchMs = 0; // 0 = use requestAnimationFrame (~16ms)
+  const BASE_BATCH_MS = 50;
+  let batchMs = BASE_BATCH_MS;
 
   const flushFrameBuf = () => {
     flushTimer = null;
@@ -309,26 +334,15 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
 
   const writeBuffered = (data) => {
     frameBuf.push(data);
-    if (batchMs > 0) {
-      // Extended batch mode after user input
-      clearTimeout(flushTimer);
-      flushTimer = setTimeout(flushFrameBuf, batchMs);
-    } else if (!flushTimer) {
-      flushTimer = true; // sentinel
-      requestAnimationFrame(() => {
-        flushTimer = null;
-        const combined = frameBuf.join("");
-        frameBuf = [];
-        term.write(combined);
-      });
-    }
+    clearTimeout(flushTimer);
+    flushTimer = setTimeout(flushFrameBuf, batchMs);
   };
 
-  // After user sends Enter, batch for 80ms to catch full redraws
+  // After user sends Enter, widen batch window to catch full redraws
   const onUserInput = (data) => {
     if (data === "\r" || data === "\n") {
-      batchMs = 80;
-      setTimeout(() => { batchMs = 0; }, 300);
+      batchMs = 120;
+      setTimeout(() => { batchMs = BASE_BATCH_MS; }, 500);
     }
   };
 
@@ -346,9 +360,11 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
       term.write(combined, () => {
         term.scrollToBottom();
         if (visContainer) visContainer.style.opacity = "1";
+        term.focus();
       });
     } else {
       if (visContainer) visContainer.style.opacity = "1";
+      term.focus();
     }
   };
 
@@ -514,20 +530,18 @@ function openSpeedrunSession(index) {
       : `/ws/terminal/${encodeURIComponent(target)}`;
     const ws = new WebSocket(`${protocol}//${location.host}${wsPath}`);
 
-    // Frame-batched writer for smooth ongoing output
+    // Batched writer for smooth ongoing output
     let srFrameBuf = [];
-    let srFrameReq = false;
+    let srFlushTimer = null;
     const srWriteBuffered = (data) => {
       srFrameBuf.push(data);
-      if (!srFrameReq) {
-        srFrameReq = true;
-        requestAnimationFrame(() => {
-          const combined = srFrameBuf.join("");
-          srFrameBuf = [];
-          srFrameReq = false;
-          term.write(combined);
-        });
-      }
+      clearTimeout(srFlushTimer);
+      srFlushTimer = setTimeout(() => {
+        srFlushTimer = null;
+        const combined = srFrameBuf.join("");
+        srFrameBuf = [];
+        term.write(combined);
+      }, 50);
     };
 
     let settled = false;
@@ -543,9 +557,11 @@ function openSpeedrunSession(index) {
         term.write(combined, () => {
           term.scrollToBottom();
           container.style.opacity = "1";
+          term.focus();
         });
       } else {
         container.style.opacity = "1";
+        term.focus();
       }
     };
     setTimeout(srFlush, 2000);

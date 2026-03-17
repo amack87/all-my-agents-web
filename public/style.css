@@ -145,12 +145,11 @@ html, body {
 }
 
 .status-dot.idle {
-  background: var(--gray);
+  background: var(--gray); /* overridden by inline style when activity data available */
 }
 
 .status-dot.unknown {
-  background: var(--gray);
-  opacity: 0.5;
+  background: var(--gray); /* overridden by inline style when activity data available */
 }
 
 @keyframes pulse {

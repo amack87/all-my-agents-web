@@ -253,7 +253,7 @@ async function discoverSessions() {
     const SEP = "|||";
     paneOutput = await tmux(
       "list-panes", "-a", "-F",
-      `#{session_name}${SEP}#{session_group}${SEP}#{pane_id}${SEP}#{pane_tty}${SEP}#{pane_current_command}${SEP}#{window_name}`
+      `#{session_name}${SEP}#{session_group}${SEP}#{pane_id}${SEP}#{pane_tty}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{session_activity}`
     );
   } catch {
     return [];
@@ -264,7 +264,7 @@ async function discoverSessions() {
   const sessions = [];
 
   for (const line of lines) {
-    const [sessionName, sessionGroup, paneId, paneTty, currentCmd, windowName] = line.split("|||");
+    const [sessionName, sessionGroup, paneId, paneTty, currentCmd, windowName, sessionActivity] = line.split("|||");
 
     // Skip AgentHub helper sessions
     if (sessionName.startsWith("_ah_")) continue;
@@ -288,6 +288,7 @@ async function discoverSessions() {
       currentCommand: currentCmd,
       windowName,
       status,
+      lastActivity: parseInt(sessionActivity, 10) || 0,
     });
   }
 
@@ -301,9 +302,15 @@ async function discoverSessions() {
     }
   }
 
-  // Sort: needsInput first, then working, then idle/unknown
+  // Sort: needsInput first, then working, then idle/unknown by most recent activity
   const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
-  sessions.sort((a, b) => (priority[a.status] ?? 3) - (priority[b.status] ?? 3));
+  sessions.sort((a, b) => {
+    const pa = priority[a.status] ?? 3;
+    const pb = priority[b.status] ?? 3;
+    if (pa !== pb) return pa - pb;
+    // Within same priority, sort by most recent activity first
+    return (b.lastActivity || 0) - (a.lastActivity || 0);
+  });
 
   return sessions;
 }
@@ -318,9 +325,12 @@ function detectStatus(content) {
 
   // Needs input signals
   if (text.includes("esc to cancel")) return "needsInput";
-  if (/❯\s+1\./.test(text)) return "needsInput";
+  if (/❯\s+\d+\./.test(text)) return "needsInput";      // numbered list selection
+  if (/\d+\.\s+Yes/.test(text)) return "needsInput";     // plan confirmation prompts
   if (/\(y\/n\)/.test(text)) return "needsInput";
   if (/Allow/.test(text) && /Deny/.test(text)) return "needsInput";
+  if (text.includes("ctrl-g to edit")) return "needsInput"; // plan mode prompt
+  if (text.includes("Type here to tell")) return "needsInput";
 
   // Idle - prompt visible
   const lastLines = lines.slice(-5).join("\n");

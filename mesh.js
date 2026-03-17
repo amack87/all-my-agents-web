@@ -180,6 +180,7 @@ export async function fetchPeerSessions(peer, timeoutMs = 3000) {
         status: VALID_STATUSES.has(s.status) ? s.status : "unknown",
         projectPath: s.projectPath ? String(s.projectPath) : undefined,
         summary: s.summary ? String(s.summary) : undefined,
+        lastActivity: typeof s.lastActivity === "number" ? s.lastActivity : 0,
         machine: peer.name,
         machineHost: `${peer.host}:${peer.port || DEFAULT_PORT}`,
       })),
