@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import os from "node:os";
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -18,7 +19,7 @@ let configCacheTime = 0;
 let cachedPeers = null;
 let peersCacheTime = 0;
 
-const DEFAULT_CONFIG = { name: "local", port: DEFAULT_PORT, peers: [] };
+const DEFAULT_CONFIG = { name: os.hostname(), port: DEFAULT_PORT, peers: [] };
 
 /**
  * Load mesh config from file. The config can optionally specify manual peers,
