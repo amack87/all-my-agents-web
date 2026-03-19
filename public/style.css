@@ -690,8 +690,6 @@ html, body {
   font-size: 11px;
   padding: 2px 8px;
   border-radius: 4px;
-  background: rgba(99, 102, 241, 0.15);
-  color: var(--accent);
   flex-shrink: 0;
   white-space: nowrap;
 }

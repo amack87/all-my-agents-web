@@ -251,7 +251,7 @@ function renderSessions() {
       <div class="session-info">
         <div class="session-top-row">
           <span class="session-name">${esc(s.name)}</span>
-          ${showMachineLabel ? `<span class="machine-badge">${esc(s.machine)}</span>` : ""}
+          ${showMachineLabel ? `<span class="machine-badge" style="background:${machineColor(s.machine).bg};color:${machineColor(s.machine).fg}">${esc(s.machine)}</span>` : ""}
           <span class="session-status-label ${s.status}">${statusLabel(s.status)}</span>
         </div>
         <div class="session-bottom-row">
@@ -340,6 +340,34 @@ function activityDotStyle(session) {
   if (session.status === "needsInput" || session.status === "working") return "";
   const color = activityDotColor(session.lastActivity);
   return `background:${color}; box-shadow: 0 0 6px ${color};`;
+}
+
+// --- Machine Color Palette ---
+// 12 visually distinct, dark-theme-friendly colors for machine badges.
+const MACHINE_COLORS = [
+  { bg: "rgba(99,102,241,0.15)",  fg: "#818cf8" },  // indigo
+  { bg: "rgba(52,211,153,0.15)",  fg: "#6ee7b7" },  // emerald
+  { bg: "rgba(251,146,60,0.15)",  fg: "#fb923c" },  // orange
+  { bg: "rgba(147,51,234,0.15)",  fg: "#a78bfa" },  // purple
+  { bg: "rgba(14,165,233,0.15)",  fg: "#38bdf8" },  // sky
+  { bg: "rgba(244,63,94,0.15)",   fg: "#fb7185" },  // rose
+  { bg: "rgba(234,179,8,0.15)",   fg: "#facc15" },  // yellow
+  { bg: "rgba(45,212,191,0.15)",  fg: "#5eead4" },  // teal
+  { bg: "rgba(249,115,22,0.15)",  fg: "#f97316" },  // amber
+  { bg: "rgba(168,85,247,0.15)",  fg: "#c084fc" },  // violet
+  { bg: "rgba(34,211,238,0.15)",  fg: "#22d3ee" },  // cyan
+  { bg: "rgba(163,230,53,0.15)",  fg: "#a3e635" },  // lime
+];
+
+const machineColorMap = new Map();
+
+function machineColor(machineName) {
+  if (!machineName) return MACHINE_COLORS[0];
+  if (machineColorMap.has(machineName)) return machineColorMap.get(machineName);
+  const idx = machineColorMap.size % MACHINE_COLORS.length;
+  const color = MACHINE_COLORS[idx];
+  machineColorMap.set(machineName, color);
+  return color;
 }
 
 function esc(str) {
