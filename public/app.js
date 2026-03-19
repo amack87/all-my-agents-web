@@ -296,6 +296,7 @@ function renderSessions() {
       s.agent || "",
       s.projectPath || "",
       s.paneId || "",
+      s.lastActivity || 0,
     ].join("|")),
   ].join("||");
 
