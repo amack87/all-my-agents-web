@@ -57,9 +57,9 @@ export async function loadMeshConfig() {
 }
 
 /**
- * Discover peers on the Tailscale network that are running AgentHub.
+ * Discover peers on the Tailscale network that are running All My Agents.
  * Uses `tailscale status --json` to find online devices, then probes
- * each one's /api/identity endpoint to check if AgentHub is running.
+ * each one's /api/identity endpoint to check if All My Agents is running.
  */
 export async function discoverTailscalePeers(config) {
   const now = Date.now();
@@ -100,7 +100,7 @@ export async function discoverTailscalePeers(config) {
     });
   }
 
-  // Probe each candidate in parallel to see if AgentHub is running
+  // Probe each candidate in parallel to see if All My Agents is running
   const probeResults = await Promise.allSettled(
     candidates.map(async (candidate) => {
       const controller = new AbortController();
@@ -178,6 +178,7 @@ export async function fetchPeerSessions(peer, timeoutMs = 3000) {
         currentCommand: String(s.currentCommand ?? ""),
         windowName: String(s.windowName ?? ""),
         status: VALID_STATUSES.has(s.status) ? s.status : "unknown",
+        agent: typeof s.agent === "string" ? s.agent : "shell",
         projectPath: s.projectPath ? String(s.projectPath) : undefined,
         summary: s.summary ? String(s.summary) : undefined,
         lastActivity: typeof s.lastActivity === "number" ? s.lastActivity : 0,

@@ -19,12 +19,17 @@ expressWs(app);
 app.use(express.json());
 app.use((_req, res, next) => {
   res.set("Cache-Control", "no-store");
+  // Allow cross-origin requests from other All My Agents instances on the tailnet
+  // (needed for client-side failover between hosts)
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type");
   next();
 });
 app.use(express.static(join(__dirname, "public")));
 
 // --- Config ---
-const PORT = parseInt(process.env.AGENTHUB_PORT || "3456", 10);
+const PORT = parseInt(process.env.ALL_MY_AGENTS_PORT || "3456", 10);
 const TMUX = findTmux();
 
 function findTmux() {
@@ -98,6 +103,52 @@ app.post("/api/sessions", async (req, res) => {
   try {
     await tmux("new-session", "-d", "-s", name);
     res.json({ ok: true, name });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List all tmux session names (for "add existing" picker)
+app.get("/api/tmux-sessions", async (_req, res) => {
+  try {
+    const output = await tmux("list-sessions", "-F", "#{session_name}");
+    const names = output.split("\n").filter((n) => n && !n.startsWith("_ah_")).sort();
+    res.json(names);
+  } catch {
+    res.json([]);
+  }
+});
+
+// List hibernated sessions (claude-hibernator — optional)
+// Set HIBERNATOR_CLI to the path of claude-hibernator's cli.py to enable.
+const HIBERNATOR_CLI = process.env.HIBERNATOR_CLI || null;
+
+app.get("/api/hibernated-sessions", async (_req, res) => {
+  if (!HIBERNATOR_CLI) return res.json([]);
+  try {
+    const { stdout } = await execFileAsync("python3", [
+      HIBERNATOR_CLI, "list", "--json",
+    ], { timeout: 5000 });
+    const sessions = JSON.parse(stdout.trim());
+    res.json(sessions);
+  } catch {
+    res.json([]);
+  }
+});
+
+// Restore a hibernated session
+app.post("/api/hibernated-sessions/:name/restore", async (req, res) => {
+  if (!HIBERNATOR_CLI) return res.status(503).json({ error: "claude-hibernator not configured" });
+  const name = req.params.name;
+  if (!TMUX_TARGET_RE.test(name)) {
+    return res.status(400).json({ error: "Invalid session name" });
+  }
+  try {
+    const { stdout } = await execFileAsync("python3", [
+      HIBERNATOR_CLI, "restore", "--json", name,
+    ], { timeout: 30000 });
+    const result = JSON.parse(stdout.trim());
+    res.json(result);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -245,6 +296,54 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
   });
 });
 
+// --- Agent Detection ---
+// Identifies what agent/tool is running in a tmux pane by inspecting
+// the process tree rooted at the pane's shell PID.
+async function detectAgent(panePid) {
+  if (!panePid) return "shell";
+  try {
+    // Get child processes of the pane's shell
+    const { stdout } = await execFileAsync("pgrep", ["-lP", panePid], { timeout: 2000 });
+    const children = stdout.trim().split("\n").filter(Boolean);
+
+    for (const child of children) {
+      const parts = child.trim().split(/\s+/);
+      if (parts.length < 2) continue;
+      const [childPid, childName] = parts;
+
+      // Direct match on process name
+      if (childName === "claude") return "Claude Code";
+      if (childName === "cursor") return "Cursor";
+      if (childName === "aider") return "Aider";
+      if (childName === "copilot") return "Copilot";
+
+      // Node-based agents: check the args
+      if (childName === "node") {
+        try {
+          const { stdout: args } = await execFileAsync("ps", ["-o", "args=", "-p", childPid], { timeout: 1000 });
+          const argsStr = args.trim().toLowerCase();
+          if (argsStr.includes("codex")) return "Codex";
+          if (argsStr.includes("claude")) return "Claude Code";
+          if (argsStr.includes("cursor")) return "Cursor";
+          if (argsStr.includes("aider")) return "Aider";
+        } catch { /* ignore */ }
+      }
+
+      // Claude Code shows its version as the process name (e.g. "2.1.77")
+      if (/^\d+\.\d+\.\d+$/.test(childName)) {
+        try {
+          const { stdout: comm } = await execFileAsync("ps", ["-o", "comm=", "-p", childPid], { timeout: 1000 });
+          if (comm.trim() === "claude") return "Claude Code";
+        } catch { /* ignore */ }
+      }
+    }
+
+    return "shell";
+  } catch {
+    return "shell";
+  }
+}
+
 // --- Session Discovery ---
 async function discoverSessions() {
   // Get all tmux sessions and panes
@@ -253,7 +352,7 @@ async function discoverSessions() {
     const SEP = "|||";
     paneOutput = await tmux(
       "list-panes", "-a", "-F",
-      `#{session_name}${SEP}#{session_group}${SEP}#{pane_id}${SEP}#{pane_tty}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{session_activity}`
+      `#{session_name}${SEP}#{session_group}${SEP}#{pane_id}${SEP}#{pane_tty}${SEP}#{pane_current_command}${SEP}#{window_name}${SEP}#{session_activity}${SEP}#{pane_pid}`
     );
   } catch {
     return [];
@@ -264,9 +363,9 @@ async function discoverSessions() {
   const sessions = [];
 
   for (const line of lines) {
-    const [sessionName, sessionGroup, paneId, paneTty, currentCmd, windowName, sessionActivity] = line.split("|||");
+    const [sessionName, sessionGroup, paneId, paneTty, currentCmd, windowName, sessionActivity, panePid] = line.split("|||");
 
-    // Skip AgentHub helper sessions
+    // Skip All My Agents helper sessions
     if (sessionName.startsWith("_ah_")) continue;
 
     // Deduplicate by session group
@@ -274,11 +373,16 @@ async function discoverSessions() {
     if (seen.has(groupKey)) continue;
     seen.add(groupKey);
 
-    // Detect status
+    // Detect status and agent in parallel
     let status = "unknown";
+    let agent = "shell";
     try {
-      const content = await tmux("capture-pane", "-t", paneId, "-p", "-J");
-      status = detectStatus(content);
+      const [content, detectedAgent] = await Promise.all([
+        tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => ""),
+        detectAgent(panePid),
+      ]);
+      status = content ? detectStatus(content) : "unknown";
+      agent = detectedAgent;
     } catch { /* ignore */ }
 
     sessions.push({
@@ -288,6 +392,7 @@ async function discoverSessions() {
       currentCommand: currentCmd,
       windowName,
       status,
+      agent,
       lastActivity: parseInt(sessionActivity, 10) || 0,
     });
   }
@@ -512,6 +617,6 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
 
 // --- Start ---
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`AgentHub Mobile running on http://0.0.0.0:${PORT}`);
+  console.log(`All My Agents Mobile running on http://0.0.0.0:${PORT}`);
   console.log(`Access from phone via Tailscale IP on port ${PORT}`);
 });

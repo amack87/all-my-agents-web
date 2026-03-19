@@ -1,7 +1,7 @@
 {
-  "name": "AgentHub Mobile",
-  "short_name": "AgentHub",
-  "description": "Mobile interface for AgentHub - manage Claude Code sessions remotely",
+  "name": "All My Agents",
+  "short_name": "All My Agents",
+  "description": "Manage AI coding agent sessions remotely from your phone",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#0a0a0a",

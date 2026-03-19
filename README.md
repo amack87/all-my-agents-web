@@ -1,28 +1,29 @@
-# AgentHub Mobile
+# All My Agents
 
-A web interface for managing Claude Code tmux sessions across multiple machines. Works on both mobile and desktop, with auto-discovery of peers via Tailscale.
+A web interface for managing AI coding agent sessions (Claude Code, Cursor, Aider, Codex) across multiple machines. Works on both mobile and desktop, with auto-discovery of peers via Tailscale.
 
 ## Why
 
-When running multiple Claude Code agents in tmux across one or more machines, you need a way to monitor them and respond to input prompts from anywhere. AgentHub Mobile gives you a unified view of all sessions across your Tailscale mesh with full terminal access, status detection, and a speedrun mode for quickly triaging agents that need attention.
+When running multiple AI coding agents in tmux across one or more machines, you need a way to monitor them and respond to input prompts from anywhere. All My Agents gives you a unified view of all sessions across your Tailscale mesh with full terminal access, status detection, and a speedrun mode for quickly triaging agents that need attention.
 
 ## Features
 
-- **Multi-machine mesh** - auto-discovers other AgentHub instances on your Tailscale network
+- **Multi-machine mesh** — auto-discovers other instances on your Tailscale network
 - **Session list** with live status indicators (Working, Needs Input, Idle)
 - **Full terminal access** via xterm.js + node-pty WebSocket connections
-- **WebSocket proxy** - access terminal sessions on remote machines through the local server
-- **Speedrun mode** - cycles through agents needing input, auto-advances after you respond
-- **Session management** - create and kill tmux sessions (local and remote)
-- **Responsive layout** - sidebar + terminal on desktop, card list on mobile
-- **Machine filter** - filter sessions by machine when multiple are connected
-- **Peer health indicators** - see which machines are online/offline
-- **PWA-capable** - installable as a home screen app on iOS/Android
-- **Mobile-optimized toolbar** - Paste, Esc, Tab, Ctrl keys, scroll mode (tmux copy-mode)
+- **WebSocket proxy** — access terminal sessions on remote machines through the local server
+- **Speedrun mode** — cycles through agents needing input, auto-advances after you respond
+- **Client-side failover** — if the active server goes down, auto-switches to another
+- **Session management** — create, kill, and restore tmux sessions (local and remote)
+- **Agent detection** — identifies Claude Code, Cursor, Aider, Codex, or shell
+- **Responsive layout** — sidebar + terminal on desktop, card list on mobile
+- **Zoom controls** — adjustable text size, persisted across sessions
+- **PWA-capable** — installable as a home screen app on iOS/Android
+- **Mobile-optimized toolbar** — Paste, Esc, Tab, Ctrl keys, scroll mode (tmux copy-mode)
 - **Swipe-to-go-back** navigation from left edge
 - **Long-press to delete** sessions
-- **Claude session enrichment** - reads `~/.claude/projects/` metadata to show project paths and summaries
-- **Auto-refresh** - session list polls every 3s, terminal status polls every 2s
+- **Claude session enrichment** — reads `~/.claude/projects/` metadata to show project paths
+- **Auto-refresh** — session list polls every 3s, terminal status polls every 2s
 
 ## Architecture
 
@@ -41,20 +42,6 @@ Node.js server (Machine A)  ◄──── auto-discovery ────►  Node
     └── /ws/proxy/:peer/:target (proxied to remote)         └── /ws/proxy/:peer/:target
 ```
 
-**Auto-discovery flow:**
-1. Runs `tailscale status --json` to find online devices on the tailnet
-2. Probes each device's `/api/identity` endpoint (port 3456, 2s timeout)
-3. Devices that respond are added as peers automatically
-4. Discovery results cached for 60 seconds
-5. Manual peers in `mesh.config.json` take priority and are always included
-
-**Key components:**
-- **mesh.js** - Tailscale auto-discovery, peer session fetching, schema validation
-- **server.js** - Express server with local tmux API, mesh aggregation, HTTP/WebSocket proxy
-- **public/app.js** - Vanilla JS SPA with mesh-aware session loading and desktop layout
-- **Terminal**: node-pty (v1.2.0-beta.11, required for Node 22 + macOS ARM) spawns `tmux attach-session`
-- **Status detection**: Captures tmux pane content and pattern-matches for Claude Code UI states
-
 ## Requirements
 
 - Node.js 22+
@@ -64,17 +51,15 @@ Node.js server (Machine A)  ◄──── auto-discovery ────►  Node
 ## Setup
 
 ```bash
-cd ~/Repos/AgentHub-Mobile
 npm install
+cp mesh.config.example.json mesh.config.json
 ```
 
-### Configure machine name
-
-Edit `mesh.config.json`:
+Edit `mesh.config.json` with your machine name:
 ```json
 {
   "name": "my-macbook",
-  "port": 3456
+  "peers": []
 }
 ```
 
@@ -83,12 +68,12 @@ Peers are discovered automatically via Tailscale. You can also add manual peers:
 {
   "name": "my-macbook",
   "peers": [
-    { "name": "desktop", "host": "192.168.1.100", "port": 3456 }
+    { "name": "desktop", "host": "100.x.x.x", "port": 3456 }
   ]
 }
 ```
 
-### Run manually
+### Run
 
 ```bash
 npm start          # production
@@ -97,28 +82,23 @@ npm run dev        # with --watch for auto-reload
 
 ### Run as a persistent service (launchd)
 
-A launchd plist is installed at `~/Library/LaunchAgents/com.andy.agenthub-mobile.plist`. It auto-starts on login and restarts on crash.
+An example plist is provided in `setup/launchd-example.plist`. Customize the paths and label for your machine, then:
 
 ```bash
-# Start
-launchctl load ~/Library/LaunchAgents/com.andy.agenthub-mobile.plist
-
-# Stop
-launchctl unload ~/Library/LaunchAgents/com.andy.agenthub-mobile.plist
-
-# View logs
-tail -f ~/Library/Logs/agenthub-mobile.log
+cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents.plist
+launchctl load ~/Library/LaunchAgents/com.allmyagents.plist
 ```
 
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AGENTHUB_PORT` | `3456` | Server port |
+| `ALL_MY_AGENTS_PORT` | `3456` | Server port |
+| `HIBERNATOR_CLI` | _(none)_ | Path to claude-hibernator `cli.py` (optional) |
 
 ## Access
 
-From any device on your Tailscale network, navigate to `http://<tailscale-ip>:3456`.
+From any device on your Tailscale network: `http://<tailscale-ip>:3456`
 
 ## Status Detection
 
@@ -141,14 +121,9 @@ Speedrun prioritizes sessions needing input across all machines. After you respo
 - Peer session data is schema-validated (allowlisted fields only)
 - tmux target parameters are validated against a strict regex
 - WebSocket proxy buffers are capped to prevent memory exhaustion
-- Network access is limited to your Tailscale network
+- Network access is limited to your Tailscale network — do not expose to the public internet
 
 ## Known Issues
 
 - **node-pty compatibility**: The stable node-pty 1.1.0 fails with `posix_spawnp` on Node 22 / macOS ARM. Must use beta 1.2.0-beta.11.
 - **TMUX env stripping**: When the server itself runs inside tmux, the `TMUX` and `TMUX_PANE` env vars must be stripped before spawning `tmux attach`, or it will refuse to nest.
-- **tmux format delimiters**: Tab characters in tmux format strings are unreliable under launchd; the server uses `|||` as a delimiter instead.
-
-## Related
-
-- [AgentHub](../AgentHub/) - Native macOS desktop app (Swift) for local tmux session management

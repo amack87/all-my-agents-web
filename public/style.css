@@ -15,6 +15,11 @@
   --radius: 12px;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --zoom: 1;
+}
+
+html {
+  font-size: calc(16px * var(--zoom));
 }
 
 * {
@@ -69,7 +74,7 @@ html, body {
 }
 
 .top-bar h1 {
-  font-size: 20px;
+  font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.5px;
 }
@@ -160,31 +165,59 @@ html, body {
 .session-info {
   flex: 1;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.session-top-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .session-name {
-  font-size: 16px;
+  font-size: 1rem;
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
 }
 
-.session-meta {
-  font-size: 13px;
+.session-bottom-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
   color: var(--text-dim);
+  opacity: 0.6;
+}
+
+.session-agent {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.session-project {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-top: 2px;
+  min-width: 0;
+}
+
+.session-project::before {
+  content: "\00b7\00a0";
 }
 
 .session-status-label {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 500;
-  padding: 3px 8px;
-  border-radius: 6px;
+  padding: 2px 7px;
+  border-radius: 5px;
   flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .session-status-label.needsInput {
@@ -227,6 +260,67 @@ html, body {
   height: 200px;
   color: var(--text-dim);
   font-size: 15px;
+}
+
+/* --- Zoom Popup --- */
+.zoom-popup {
+  position: fixed;
+  top: calc(var(--safe-top) + 56px);
+  right: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 12px;
+  z-index: 150;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+}
+
+.zoom-popup.hidden {
+  display: none;
+}
+
+#zoom-level {
+  font-size: 14px;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.zoom-btn {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #222;
+  color: var(--text);
+  font-size: 18px;
+  font-weight: 600;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.zoom-btn:active {
+  background: #333;
+}
+
+.zoom-btn-text {
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #222;
+  color: var(--text-dim);
+  font-size: 12px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+
+.zoom-btn-text:active {
+  background: #333;
 }
 
 /* --- Terminal View --- */
@@ -411,6 +505,93 @@ html, body {
   max-width: 360px;
 }
 
+.add-session-modal {
+  max-height: 400px;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.modal-header h2 {
+  flex: 1;
+  font-size: 18px;
+  text-align: center;
+}
+
+.modal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.modal-panel.hidden {
+  display: none;
+}
+
+.modal-option-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 15px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.modal-option-btn:active {
+  background: var(--bg-card-hover);
+}
+
+.modal-scroll-list {
+  max-height: 240px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.modal-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.modal-list-item:active {
+  background: var(--bg-card-hover);
+}
+
+.modal-list-item .item-name {
+  flex: 1;
+  font-size: 15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.modal-list-item .item-meta {
+  font-size: 12px;
+  color: var(--text-dim);
+  flex-shrink: 0;
+}
+
 .modal-content h2 {
   font-size: 18px;
   margin-bottom: 16px;
@@ -431,7 +612,6 @@ html, body {
   color: var(--text);
   font-size: 16px;
   outline: none;
-  margin-bottom: 16px;
 }
 
 .modal-content input:focus {

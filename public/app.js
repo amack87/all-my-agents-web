@@ -4,6 +4,118 @@ import { FitAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+
 import { WebLinksAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/+esm";
 import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/+esm";
 
+// --- Host Discovery & Failover ---
+// On load, probes the current host + all known peers to find which servers
+// are online. If the current host goes down, auto-switches to another.
+const HOSTS_STORAGE_KEY = "allmyagents-known-hosts";
+const ACTIVE_HOST_KEY = "allmyagents-active-host";
+
+// Base URL for all API calls. Empty string = same origin (default).
+let apiBase = "";
+
+function apiUrl(path) {
+  return apiBase + path;
+}
+
+function wsBase() {
+  if (!apiBase) return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
+  const url = new URL(apiBase);
+  return `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`;
+}
+
+/** Probe a host's /api/identity with a timeout. Returns identity or null. */
+async function probeHost(origin, timeoutMs = 2000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`${origin}/api/identity`, { signal: controller.signal });
+    if (!res.ok) return null;
+    const identity = await res.json();
+    return { origin, name: identity.name, peers: identity.peers || [] };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Load known hosts from localStorage. Always includes current origin. */
+function loadKnownHosts() {
+  const saved = localStorage.getItem(HOSTS_STORAGE_KEY);
+  const hosts = saved ? JSON.parse(saved) : [];
+  const current = `${location.protocol}//${location.host}`;
+  if (!hosts.includes(current)) hosts.unshift(current);
+  return [...new Set(hosts)];
+}
+
+/** Save known hosts to localStorage. */
+function saveKnownHosts(hosts) {
+  localStorage.setItem(HOSTS_STORAGE_KEY, JSON.stringify([...new Set(hosts)]));
+}
+
+/**
+ * Discover the best available host. Probes all known hosts in parallel,
+ * picks the first to respond (preferring the last-used host), and
+ * updates the known hosts list with any newly discovered peers.
+ */
+async function discoverActiveHost() {
+  const known = loadKnownHosts();
+  const lastActive = localStorage.getItem(ACTIVE_HOST_KEY);
+
+  // Probe all known hosts in parallel
+  const results = await Promise.allSettled(known.map((h) => probeHost(h)));
+  const alive = results
+    .map((r, i) => (r.status === "fulfilled" && r.value ? { ...r.value, idx: i } : null))
+    .filter(Boolean);
+
+  if (alive.length === 0) {
+    // No hosts reachable — stay on current origin
+    apiBase = "";
+    return;
+  }
+
+  // Prefer last-used host if still alive, otherwise first responder
+  const preferred = alive.find((h) => h.origin === lastActive) || alive[0];
+  const current = `${location.protocol}//${location.host}`;
+
+  if (preferred.origin === current) {
+    apiBase = ""; // same origin, use relative URLs
+  } else {
+    apiBase = preferred.origin;
+  }
+  localStorage.setItem(ACTIVE_HOST_KEY, preferred.origin);
+
+  // Discover new hosts from peers reported by alive hosts
+  const allHosts = [...known];
+  for (const host of alive) {
+    for (const peer of host.peers) {
+      const peerOrigin = `http://${peer.host}:${peer.port || 3456}`;
+      if (!allHosts.includes(peerOrigin)) allHosts.push(peerOrigin);
+    }
+  }
+  saveKnownHosts(allHosts);
+
+  return preferred;
+}
+
+/** Check if the active host is still reachable. If not, failover. */
+async function healthCheck() {
+  const testUrl = apiUrl("/api/identity");
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(testUrl, { signal: controller.signal });
+    clearTimeout(timer);
+    if (res.ok) return true;
+  } catch { /* unreachable */ }
+
+  // Active host is down — rediscover
+  console.log("[AllMyAgents] Active host unreachable, failing over...");
+  await discoverActiveHost();
+  await loadSessions();
+  return false;
+}
+
 // --- State ---
 const state = {
   sessions: [],
@@ -34,11 +146,11 @@ const state = {
 // --- API ---
 const api = {
   async getSessions() {
-    const res = await fetch("/api/sessions");
+    const res = await fetch(apiUrl("/api/sessions"));
     return res.json();
   },
   async createSession(name) {
-    const res = await fetch("/api/sessions", {
+    const res = await fetch(apiUrl("/api/sessions"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
@@ -47,24 +159,24 @@ const api = {
   },
   async deleteSession(name, machineHost) {
     const url = machineHost && machineHost !== "local"
-      ? `/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}`
-      : `/api/sessions/${encodeURIComponent(name)}`;
+      ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}`)
+      : apiUrl(`/api/sessions/${encodeURIComponent(name)}`);
     const res = await fetch(url, { method: "DELETE" });
     return res.json();
   },
   async capturePane(target, machineHost) {
     const url = machineHost && machineHost !== "local"
-      ? `/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(target)}/capture`
-      : `/api/sessions/${encodeURIComponent(target)}/capture`;
+      ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(target)}/capture`)
+      : apiUrl(`/api/sessions/${encodeURIComponent(target)}/capture`);
     const res = await fetch(url);
     return res.json();
   },
   async getMeshSessions() {
-    const res = await fetch("/api/mesh/sessions");
+    const res = await fetch(apiUrl("/api/mesh/sessions"));
     return res.json();
   },
   async getIdentity() {
-    const res = await fetch("/api/identity");
+    const res = await fetch(apiUrl("/api/identity"));
     return res.json();
   },
 };
@@ -137,11 +249,16 @@ function renderSessions() {
          data-machine-host="${esc(s.machineHost)}">
       <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
       <div class="session-info">
-        <div class="session-name">${esc(s.name)}</div>
-        <div class="session-meta">${esc(s.projectPath || s.currentCommand || s.paneId)}</div>
+        <div class="session-top-row">
+          <span class="session-name">${esc(s.name)}</span>
+          ${showMachineLabel ? `<span class="machine-badge">${esc(s.machine)}</span>` : ""}
+          <span class="session-status-label ${s.status}">${statusLabel(s.status)}</span>
+        </div>
+        <div class="session-bottom-row">
+          <span class="session-agent">${esc(s.agent || "shell")}</span>
+          ${s.projectPath ? `<span class="session-project">${esc(s.projectPath)}</span>` : ""}
+        </div>
       </div>
-      ${showMachineLabel ? `<span class="machine-badge">${esc(s.machine)}</span>` : ""}
-      <span class="session-status-label ${s.status}">${statusLabel(s.status)}</span>
     </div>
   `
     )
@@ -232,6 +349,29 @@ function esc(str) {
   return el.innerHTML;
 }
 
+// --- Mobile Input Fix ---
+// iOS virtual keyboards fire `beforeinput` with inputType "deleteContentBackward"
+// for long-press backspace, but xterm.js doesn't always translate repeated events
+// into key-repeat. This patches xterm's internal textarea to forward those events.
+function patchMobileInput(term, getWs) {
+  // xterm.js creates a textarea inside .xterm-helper-textarea
+  const textarea = term.element?.querySelector(".xterm-helper-textarea");
+  if (!textarea) return;
+
+  textarea.addEventListener("beforeinput", (e) => {
+    const ws = getWs();
+    if (!ws || ws.readyState !== 1) return;
+
+    if (e.inputType === "deleteContentBackward") {
+      ws.send(JSON.stringify({ type: "input", data: "\x7f" })); // DEL (backspace)
+      e.preventDefault();
+    } else if (e.inputType === "deleteContentForward") {
+      ws.send(JSON.stringify({ type: "input", data: "\x1b[3~" })); // Forward delete
+      e.preventDefault();
+    }
+  });
+}
+
 // --- Terminal ---
 function openTerminal(sessionName, machineHost = "local") {
   state.activeSession = sessionName;
@@ -249,9 +389,10 @@ function openTerminal(sessionName, machineHost = "local") {
   cleanupTerminal();
 
   // Create terminal
+  const termZoom = ZOOM_STEPS[zoomIndex];
   const term = new Terminal({
     fontFamily: '"JetBrains Mono NF", monospace',
-    fontSize: 14,
+    fontSize: Math.round(14 * termZoom),
     theme: {
       background: "#000000",
       foreground: "#e4e4e4",
@@ -284,6 +425,9 @@ function openTerminal(sessionName, machineHost = "local") {
   state.terminal = term;
   state.fitAddon = fitAddon;
 
+  // Patch mobile backspace key repeat
+  patchMobileInput(term, () => state.ws);
+
   // Handle resize
   const resizeHandler = () => {
     fitAddon.fit();
@@ -310,11 +454,10 @@ function openTerminal(sessionName, machineHost = "local") {
 }
 
 function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", visContainer = null) {
-  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const wsPath = machineHost && machineHost !== "local"
     ? `/ws/proxy/${encodeURIComponent(machineHost)}/${encodeURIComponent(sessionName)}`
     : `/ws/terminal/${encodeURIComponent(sessionName)}`;
-  const ws = new WebSocket(`${protocol}//${location.host}${wsPath}`);
+  const ws = new WebSocket(`${wsBase()}${wsPath}`);
 
   // Batched writer: collects all output within a window and writes
   // as a single chunk. Prevents visible incremental rendering during
@@ -493,9 +636,10 @@ function openSpeedrunSession(index) {
   $("#speedrun-position").textContent = `${index + 1} of ${state.speedrunQueue.length}`;
 
   // Create terminal
+  const srZoom = ZOOM_STEPS[zoomIndex];
   const term = new Terminal({
     fontFamily: '"JetBrains Mono NF", monospace',
-    fontSize: 14,
+    fontSize: Math.round(14 * srZoom),
     theme: {
       background: "#000000",
       foreground: "#e4e4e4",
@@ -524,11 +668,10 @@ function openSpeedrunSession(index) {
 
     const target = session.name;
     const machineHost = session.machineHost || "local";
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const wsPath = machineHost && machineHost !== "local"
       ? `/ws/proxy/${encodeURIComponent(machineHost)}/${encodeURIComponent(target)}`
       : `/ws/terminal/${encodeURIComponent(target)}`;
-    const ws = new WebSocket(`${protocol}//${location.host}${wsPath}`);
+    const ws = new WebSocket(`${wsBase()}${wsPath}`);
 
     // Batched writer for smooth ongoing output
     let srFrameBuf = [];
@@ -602,6 +745,9 @@ function openSpeedrunSession(index) {
 
   state.speedrunTerminal = term;
   state.speedrunFit = fitAddon;
+
+  // Patch mobile backspace key repeat
+  patchMobileInput(term, () => state.speedrunWs);
 
   // Setup toolbar
   setupToolbar("#speedrun-view .terminal-toolbar", term);
@@ -821,18 +967,51 @@ function setupSwipeBack(viewEl, goBackFn) {
 setupSwipeBack(views.terminal, closeTerminal);
 setupSwipeBack(views.speedrun, stopSpeedrun);
 
-// --- Modals ---
+// --- Add Session Modal ---
+let addSessionMode = "pick"; // pick | new | existing | hibernated
+
 function showNewSessionModal() {
   const modal = $("#new-session-modal");
-  const input = $("#new-session-name");
-  input.value = "";
   modal.classList.remove("hidden");
-  setTimeout(() => input.focus(), 100);
+  setAddSessionMode("pick");
 }
 
 function hideNewSessionModal() {
   $("#new-session-modal").classList.add("hidden");
 }
+
+function setAddSessionMode(mode) {
+  addSessionMode = mode;
+
+  // Toggle panels
+  $("#modal-pick").classList.toggle("hidden", mode !== "pick");
+  $("#modal-new").classList.toggle("hidden", mode !== "new");
+  $("#modal-existing").classList.toggle("hidden", mode !== "existing");
+  $("#modal-hibernated").classList.toggle("hidden", mode !== "hibernated");
+
+  // Back button
+  $("#modal-back").classList.toggle("hidden", mode === "pick");
+
+  // Title
+  const titles = { pick: "Add Session", new: "New Session", existing: "Existing Sessions", hibernated: "Hibernated" };
+  $("#modal-title").textContent = titles[mode] || "Add Session";
+
+  // Load data when switching to list modes
+  if (mode === "existing") loadExistingSessions();
+  if (mode === "hibernated") loadHibernatedSessions();
+  if (mode === "new") {
+    const input = $("#new-session-name");
+    input.value = "";
+    setTimeout(() => input.focus(), 100);
+  }
+}
+
+// Pick mode buttons
+document.querySelectorAll("[data-mode]").forEach((btn) => {
+  btn.addEventListener("click", () => setAddSessionMode(btn.dataset.mode));
+});
+
+$("#modal-back").addEventListener("click", () => setAddSessionMode("pick"));
 
 async function createSession() {
   const name = $("#new-session-name").value.trim();
@@ -846,6 +1025,91 @@ async function createSession() {
 
   hideNewSessionModal();
   await loadSessions();
+  // Auto-open the new session
+  openTerminal(name);
+}
+
+async function loadExistingSessions() {
+  const container = $("#existing-sessions-list");
+  container.innerHTML = '<div class="empty-state" style="height:100px">Loading...</div>';
+
+  try {
+    const res = await fetch(apiUrl("/api/tmux-sessions"));
+    const names = await res.json();
+
+    if (names.length === 0) {
+      container.innerHTML = '<div class="empty-state" style="height:100px">No tmux sessions found</div>';
+      return;
+    }
+
+    // Sessions already visible in the sidebar
+    const visibleNames = new Set(state.sessions.map((s) => s.name));
+
+    container.innerHTML = names.map((name) => {
+      const isVisible = visibleNames.has(name);
+      return `<div class="modal-list-item" data-session-name="${esc(name)}">
+        <span class="item-name">${esc(name)}</span>
+        ${isVisible ? '<span class="item-meta">visible</span>' : ""}
+      </div>`;
+    }).join("");
+
+    container.querySelectorAll(".modal-list-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        const name = item.dataset.sessionName;
+        hideNewSessionModal();
+        openTerminal(name);
+      });
+    });
+  } catch {
+    container.innerHTML = '<div class="empty-state" style="height:100px">Failed to load</div>';
+  }
+}
+
+async function loadHibernatedSessions() {
+  const container = $("#hibernated-sessions-list");
+  container.innerHTML = '<div class="empty-state" style="height:100px">Loading...</div>';
+
+  try {
+    const res = await fetch(apiUrl("/api/hibernated-sessions"));
+    const sessions = await res.json();
+
+    if (sessions.length === 0) {
+      container.innerHTML = '<div class="empty-state" style="height:100px">No hibernated sessions</div>';
+      return;
+    }
+
+    container.innerHTML = sessions.map((s) => {
+      const dir = s.working_directory ? s.working_directory.split("/").pop() : "";
+      const date = (s.hibernated_at || "").substring(0, 16).replace("T", " ");
+      return `<div class="modal-list-item" data-session-name="${esc(s.session_name)}">
+        <span class="item-name">${esc(s.session_name)}</span>
+        <span class="item-meta">${esc(dir || date)}</span>
+      </div>`;
+    }).join("");
+
+    container.querySelectorAll(".modal-list-item").forEach((item) => {
+      item.addEventListener("click", async () => {
+        const name = item.dataset.sessionName;
+        item.querySelector(".item-meta").textContent = "Restoring...";
+
+        try {
+          const res = await fetch(apiUrl(`/api/hibernated-sessions/${encodeURIComponent(name)}/restore`), { method: "POST" });
+          const result = await res.json();
+          if (result.success) {
+            hideNewSessionModal();
+            await loadSessions();
+            openTerminal(name);
+          } else {
+            item.querySelector(".item-meta").textContent = result.error || "Failed";
+          }
+        } catch {
+          item.querySelector(".item-meta").textContent = "Error";
+        }
+      });
+    });
+  } catch {
+    container.innerHTML = '<div class="empty-state" style="height:100px">Failed to load</div>';
+  }
 }
 
 function confirmDelete(sessionName, machineHost = "local") {
@@ -922,12 +1186,88 @@ function stopListPolling() {
   if (listPollInterval) clearInterval(listPollInterval);
 }
 
+// --- Zoom ---
+const ZOOM_STEPS = [0.75, 0.85, 0.9, 1, 1.1, 1.2, 1.35, 1.5];
+const ZOOM_STORAGE_KEY = "allmyagents-zoom";
+
+function getZoomIndex() {
+  const saved = localStorage.getItem(ZOOM_STORAGE_KEY);
+  if (saved !== null) {
+    const idx = ZOOM_STEPS.indexOf(parseFloat(saved));
+    if (idx !== -1) return idx;
+  }
+  return ZOOM_STEPS.indexOf(1);
+}
+
+let zoomIndex = getZoomIndex();
+
+function applyZoom() {
+  const zoom = ZOOM_STEPS[zoomIndex];
+  document.documentElement.style.setProperty("--zoom", zoom);
+  $("#zoom-level").textContent = `${Math.round(zoom * 100)}%`;
+  localStorage.setItem(ZOOM_STORAGE_KEY, zoom);
+
+  // Also scale terminal font size
+  const termFontSize = Math.round(14 * zoom);
+  if (state.terminal) {
+    state.terminal.options.fontSize = termFontSize;
+    state.fitAddon?.fit();
+  }
+  if (state.speedrunTerminal) {
+    state.speedrunTerminal.options.fontSize = termFontSize;
+    state.speedrunFit?.fit();
+  }
+}
+
+function zoomUp() {
+  if (zoomIndex < ZOOM_STEPS.length - 1) {
+    zoomIndex++;
+    applyZoom();
+  }
+}
+
+function zoomDown() {
+  if (zoomIndex > 0) {
+    zoomIndex--;
+    applyZoom();
+  }
+}
+
+function zoomReset() {
+  zoomIndex = ZOOM_STEPS.indexOf(1);
+  applyZoom();
+}
+
+function toggleZoomPopup() {
+  $("#zoom-popup").classList.toggle("hidden");
+}
+
+// Close zoom popup when tapping elsewhere
+document.addEventListener("click", (e) => {
+  const popup = $("#zoom-popup");
+  const btn = $("#zoom-btn");
+  if (!popup.classList.contains("hidden") && !popup.contains(e.target) && !btn.contains(e.target)) {
+    popup.classList.add("hidden");
+  }
+});
+
+$("#zoom-btn").addEventListener("click", toggleZoomPopup);
+$("#zoom-up").addEventListener("click", zoomUp);
+$("#zoom-down").addEventListener("click", zoomDown);
+$("#zoom-reset").addEventListener("click", zoomReset);
+
 // --- Init ---
 async function init() {
   // Pre-load terminal font before any terminal opens
   try {
     await document.fonts.load('14px "JetBrains Mono NF"');
   } catch { /* font API may not be available */ }
+
+  // Apply saved zoom level
+  applyZoom();
+
+  // Discover best available host (failover if current is down)
+  await discoverActiveHost();
 
   try {
     state.identity = await api.getIdentity();
@@ -943,6 +1283,9 @@ async function init() {
 
 init();
 startListPolling();
+
+// Periodic health check — failover if active host goes down
+setInterval(healthCheck, 30_000);
 
 // Handle visibility change (phone lock/unlock, app switching)
 document.addEventListener("visibilitychange", () => {

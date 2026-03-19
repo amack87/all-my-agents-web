@@ -1,7 +1,7 @@
 {
-  "name": "agenthub-mobile",
+  "name": "all-my-agents",
   "version": "1.0.0",
-  "description": "Mobile web interface for AgentHub - manage Claude Code tmux sessions remotely",
+  "description": "Web interface for managing AI coding agent sessions across machines",
   "type": "module",
   "scripts": {
     "start": "node server.js",
