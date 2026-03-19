@@ -150,6 +150,7 @@ const state = {
   terminalLastReconnectAt: 0,
   terminalReconnectTimer: null,
   terminalReconnectAttempts: 0,
+  renderedSessionsSignature: "",
 };
 
 // --- API ---
@@ -282,6 +283,24 @@ function renderSessions() {
   const filtered = state.machineFilter === "all"
     ? state.sessions
     : state.sessions.filter((s) => s.machine === state.machineFilter);
+
+  const signature = [
+    state.machineFilter,
+    state.hasPeers ? "peers" : "local",
+    state.activeSession || "",
+    ...filtered.map((s) => [
+      s.name,
+      s.machine || "",
+      s.machineHost || "",
+      s.status || "",
+      s.agent || "",
+      s.projectPath || "",
+      s.paneId || "",
+    ].join("|")),
+  ].join("||");
+
+  if (signature === state.renderedSessionsSignature) return;
+  state.renderedSessionsSignature = signature;
 
   if (filtered.length === 0) {
     container.innerHTML = '<div class="empty-state">No tmux sessions found</div>';
@@ -563,33 +582,44 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
   const ws = new WebSocket(`${wsBase()}${wsPath}`);
   let connectFinished = false;
 
-  // Batched writer: collects all output within a window and writes
-  // as a single chunk. Prevents visible incremental rendering during
-  // screen redraws (Claude Code UI transitions, permission prompts, etc).
-  // 50ms base is imperceptible but catches most multi-message bursts.
-  let frameBuf = [];
-  let flushTimer = null;
-  const BASE_BATCH_MS = 50;
-  let batchMs = BASE_BATCH_MS;
+  // Backpressured writer: keep only one xterm write in flight.
+  // This avoids event-loop stalls under heavy output bursts.
+  let pendingOutput = "";
+  let writeInFlight = false;
+  let flushScheduled = false;
+  let boostBatchUntil = 0;
 
-  const flushFrameBuf = () => {
-    flushTimer = null;
-    const combined = frameBuf.join("");
-    frameBuf = [];
-    term.write(combined);
+  const flushOutput = () => {
+    flushScheduled = false;
+    if (writeInFlight || pendingOutput.length === 0) return;
+
+    const isBoosted = Date.now() < boostBatchUntil;
+    const chunkSize = isBoosted ? 96_000 : 48_000;
+    const chunk = pendingOutput.slice(0, chunkSize);
+    pendingOutput = pendingOutput.slice(chunk.length);
+
+    writeInFlight = true;
+    term.write(chunk, () => {
+      writeInFlight = false;
+      if (pendingOutput.length > 0) scheduleFlush();
+    });
+  };
+
+  const scheduleFlush = () => {
+    if (flushScheduled) return;
+    flushScheduled = true;
+    requestAnimationFrame(flushOutput);
   };
 
   const writeBuffered = (data) => {
-    frameBuf.push(data);
-    clearTimeout(flushTimer);
-    flushTimer = setTimeout(flushFrameBuf, batchMs);
+    pendingOutput += data;
+    scheduleFlush();
   };
 
   // After user sends Enter, widen batch window to catch full redraws
   const onUserInput = (data) => {
     if (data === "\r" || data === "\n") {
-      batchMs = 120;
-      setTimeout(() => { batchMs = BASE_BATCH_MS; }, 500);
+      boostBatchUntil = Date.now() + 500;
     }
   };
 
@@ -644,7 +674,7 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
         term.write("\r\n[Session ended]\r\n");
       }
     } catch {
-      term.write(evt.data);
+      writeBuffered(evt.data);
     }
   };
 
@@ -1301,6 +1331,8 @@ function startListPolling() {
   stopListPolling();
   listPollInterval = setInterval(() => {
     if (views.sessionList.classList.contains("active")) {
+      // On desktop, avoid constant list re-renders while a terminal is actively streaming.
+      if (isDesktop() && state.activeSession && state.ws?.readyState === 1) return;
       loadSessions();
     }
   }, 3000);
@@ -1416,9 +1448,12 @@ setInterval(() => {
   if (document.visibilityState !== "visible") return;
 
   if (views.sessionList.classList.contains("active")) {
-    const staleMs = Date.now() - (state.sessionsLastSuccessAt || 0);
-    if (staleMs > 12_000 || state.sessionLoadFailures >= 3) {
-      loadSessions();
+    // Same skip rule as polling: keep sidebar recovery quiet while live terminal is active.
+    if (!(isDesktop() && state.activeSession && state.ws?.readyState === 1)) {
+      const staleMs = Date.now() - (state.sessionsLastSuccessAt || 0);
+      if (staleMs > 12_000 || state.sessionLoadFailures >= 3) {
+        loadSessions();
+      }
     }
   }
 
