@@ -225,11 +225,14 @@ export async function fetchAllMeshSessions(localSessions, config) {
     }
   }
 
-  // Sort: needsInput first, then working, then idle/unknown
+  // Sort: needsInput first, then working, then idle/unknown — by most recent activity within group
   const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
-  const sorted = [...allSessions].sort(
-    (a, b) => (priority[a.status] ?? 3) - (priority[b.status] ?? 3)
-  );
+  const sorted = [...allSessions].sort((a, b) => {
+    const pa = priority[a.status] ?? 3;
+    const pb = priority[b.status] ?? 3;
+    if (pa !== pb) return pa - pb;
+    return (b.lastActivity || 0) - (a.lastActivity || 0);
+  });
 
   return { sessions: sorted, peerStatus };
 }
