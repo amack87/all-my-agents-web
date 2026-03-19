@@ -2,6 +2,10 @@
 
 A web interface for managing AI coding agent sessions (Claude Code, Cursor, Aider, Codex) across multiple machines. Works on both mobile and desktop, with auto-discovery of peers via Tailscale.
 
+## UI Example
+
+![All My Agents UI example](docs/images/ui-example.png)
+
 ## Why
 
 When running multiple AI coding agents in tmux across one or more machines, you need a way to monitor them and respond to input prompts from anywhere. All My Agents gives you a unified view of all sessions across your Tailscale mesh with full terminal access, status detection, and a speedrun mode for quickly triaging agents that need attention.

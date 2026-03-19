@@ -141,43 +141,74 @@ const state = {
   speedrunAutoAdvanceTimer: null,
   speedrunSwitchingTimer: null,
   lastInputTime: 0,
+  // Resilience
+  sessionsLoadInFlight: false,
+  sessionsLoadQueued: false,
+  sessionsLastSuccessAt: 0,
+  sessionLoadFailures: 0,
+  terminalPollFailures: 0,
+  terminalLastReconnectAt: 0,
+  terminalReconnectTimer: null,
+  terminalReconnectAttempts: 0,
 };
 
 // --- API ---
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function fetchJson(url, options = {}, { timeoutMs = 5000, retries = 0 } = {}) {
+  let attempt = 0;
+  for (;;) {
+    try {
+      const res = await fetchWithTimeout(url, options, timeoutMs);
+      return await res.json();
+    } catch (err) {
+      if (attempt >= retries) throw err;
+      attempt++;
+      await sleep(200 * attempt);
+    }
+  }
+}
+
 const api = {
   async getSessions() {
-    const res = await fetch(apiUrl("/api/sessions"));
-    return res.json();
+    return fetchJson(apiUrl("/api/sessions"), {}, { timeoutMs: 5000, retries: 1 });
   },
   async createSession(name) {
-    const res = await fetch(apiUrl("/api/sessions"), {
+    return fetchJson(apiUrl("/api/sessions"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
-    });
-    return res.json();
+    }, { timeoutMs: 7000 });
   },
   async deleteSession(name, machineHost) {
     const url = machineHost && machineHost !== "local"
       ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}`)
       : apiUrl(`/api/sessions/${encodeURIComponent(name)}`);
-    const res = await fetch(url, { method: "DELETE" });
-    return res.json();
+    return fetchJson(url, { method: "DELETE" }, { timeoutMs: 7000 });
   },
   async capturePane(target, machineHost) {
     const url = machineHost && machineHost !== "local"
       ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(target)}/capture`)
       : apiUrl(`/api/sessions/${encodeURIComponent(target)}/capture`);
-    const res = await fetch(url);
-    return res.json();
+    return fetchJson(url, {}, { timeoutMs: 3500, retries: 1 });
   },
   async getMeshSessions() {
-    const res = await fetch(apiUrl("/api/mesh/sessions"));
-    return res.json();
+    return fetchJson(apiUrl("/api/mesh/sessions"), {}, { timeoutMs: 6000, retries: 1 });
   },
   async getIdentity() {
-    const res = await fetch(apiUrl("/api/identity"));
-    return res.json();
+    return fetchJson(apiUrl("/api/identity"), {}, { timeoutMs: 4000, retries: 1 });
   },
 };
 
@@ -209,20 +240,40 @@ function showView(name) {
 
 // --- Session List ---
 async function loadSessions() {
-  try {
-    const result = await api.getMeshSessions();
-    state.sessions = result.sessions || [];
-    state.peerStatus = result.peerStatus || {};
-    state.hasPeers = Object.keys(state.peerStatus).length > 0;
-  } catch {
-    // Fallback to local-only
-    const sessions = await api.getSessions();
-    state.sessions = sessions.map((s) => ({ ...s, machine: "local", machineHost: "local" }));
-    state.peerStatus = {};
-    state.hasPeers = false;
+  if (state.sessionsLoadInFlight) {
+    state.sessionsLoadQueued = true;
+    return;
   }
-  renderPeerStatus();
-  renderSessions();
+
+  state.sessionsLoadInFlight = true;
+  try {
+    try {
+      const result = await api.getMeshSessions();
+      state.sessions = result.sessions || [];
+      state.peerStatus = result.peerStatus || {};
+      state.hasPeers = Object.keys(state.peerStatus).length > 0;
+      state.sessionsLastSuccessAt = Date.now();
+      state.sessionLoadFailures = 0;
+    } catch {
+      // Fallback to local-only
+      const sessions = await api.getSessions();
+      state.sessions = sessions.map((s) => ({ ...s, machine: "local", machineHost: "local" }));
+      state.peerStatus = {};
+      state.hasPeers = false;
+      state.sessionsLastSuccessAt = Date.now();
+      state.sessionLoadFailures = 0;
+    }
+    renderPeerStatus();
+    renderSessions();
+  } catch {
+    state.sessionLoadFailures++;
+  } finally {
+    state.sessionsLoadInFlight = false;
+    if (state.sessionsLoadQueued) {
+      state.sessionsLoadQueued = false;
+      loadSessions();
+    }
+  }
 }
 
 function renderSessions() {
@@ -474,11 +525,35 @@ function openTerminal(sessionName, machineHost = "local") {
       const { status } = await api.capturePane(target, machineHost);
       const dot = $("#terminal-status-dot");
       dot.className = `status-dot ${status}`;
-    } catch { /* ignore */ }
+      state.terminalPollFailures = 0;
+    } catch {
+      state.terminalPollFailures++;
+      // If pane/status polling repeatedly fails, reopen the terminal automatically.
+      if (state.terminalPollFailures >= 3 && Date.now() - state.terminalLastReconnectAt > 10_000) {
+        reconnectTerminal();
+      }
+    }
   }, 2000);
 
   // Setup toolbar
   setupToolbar("#terminal-view .terminal-toolbar", term);
+}
+
+function scheduleTerminalReconnect(sessionName, machineHost) {
+  if (!state.activeSession || state.activeSession !== sessionName) return;
+  if ((state.activeSessionMeta?.machineHost || "local") !== machineHost) return;
+  if (state.terminalReconnectTimer) return;
+
+  const attempt = Math.min(state.terminalReconnectAttempts, 4);
+  const delayMs = 1000 * (2 ** attempt);
+  state.terminalReconnectAttempts++;
+
+  state.terminalReconnectTimer = setTimeout(() => {
+    state.terminalReconnectTimer = null;
+    if (!state.activeSession || state.activeSession !== sessionName) return;
+    if ((state.activeSessionMeta?.machineHost || "local") !== machineHost) return;
+    reconnectTerminal();
+  }, delayMs);
 }
 
 function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", visContainer = null) {
@@ -486,6 +561,7 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
     ? `/ws/proxy/${encodeURIComponent(machineHost)}/${encodeURIComponent(sessionName)}`
     : `/ws/terminal/${encodeURIComponent(sessionName)}`;
   const ws = new WebSocket(`${wsBase()}${wsPath}`);
+  let connectFinished = false;
 
   // Batched writer: collects all output within a window and writes
   // as a single chunk. Prevents visible incremental rendering during
@@ -543,6 +619,12 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
   setTimeout(flush, 2000);
 
   ws.onopen = () => {
+    connectFinished = true;
+    state.terminalReconnectAttempts = 0;
+    if (state.terminalReconnectTimer) {
+      clearTimeout(state.terminalReconnectTimer);
+      state.terminalReconnectTimer = null;
+    }
     ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
   };
 
@@ -568,12 +650,18 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
 
   ws.onclose = () => {
     state._wsDisconnected = true;
+    if (ws._expectedClose) return;
     term.write("\r\n[Disconnected — tap reconnect or switch back to this app]\r\n");
+    scheduleTerminalReconnect(sessionName, machineHost);
   };
 
   ws.onerror = () => {
     state._wsDisconnected = true;
-    term.write("\r\n[Connection error]\r\n");
+    if (ws._expectedClose) return;
+    if (!connectFinished) {
+      term.write("\r\n[Connection error]\r\n");
+    }
+    scheduleTerminalReconnect(sessionName, machineHost);
   };
 
   // Send terminal input to server
@@ -589,7 +677,14 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
 }
 
 function cleanupTerminal() {
+  if (state.terminalReconnectTimer) {
+    clearTimeout(state.terminalReconnectTimer);
+    state.terminalReconnectTimer = null;
+  }
+  state.terminalReconnectAttempts = 0;
+  state.terminalPollFailures = 0;
   if (state.ws) {
+    state.ws._expectedClose = true;
     state.ws.close();
     state.ws = null;
   }
@@ -614,6 +709,7 @@ function reconnectTerminal() {
   if (!state.activeSession) return;
   const { activeSession, activeSessionMeta } = state;
   const machineHost = activeSessionMeta?.machineHost || "local";
+  state.terminalLastReconnectAt = Date.now();
   // Full reopen — disposes old terminal + WebSocket, creates fresh ones
   openTerminal(activeSession, machineHost);
 }
@@ -1314,6 +1410,24 @@ startListPolling();
 
 // Periodic health check — failover if active host goes down
 setInterval(healthCheck, 30_000);
+
+// Recovery watchdog: refresh stalled list view + reconnect dead terminals.
+setInterval(() => {
+  if (document.visibilityState !== "visible") return;
+
+  if (views.sessionList.classList.contains("active")) {
+    const staleMs = Date.now() - (state.sessionsLastSuccessAt || 0);
+    if (staleMs > 12_000 || state.sessionLoadFailures >= 3) {
+      loadSessions();
+    }
+  }
+
+  if (state.activeSession && state.ws && state.ws.readyState !== 1) {
+    if (Date.now() - state.terminalLastReconnectAt > 4_000) {
+      reconnectTerminal();
+    }
+  }
+}, 5000);
 
 // Handle visibility change (phone lock/unlock, app switching)
 document.addEventListener("visibilitychange", () => {
