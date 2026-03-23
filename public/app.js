@@ -424,13 +424,13 @@ const machineColorMap = new Map();
 function machineColor(machineName) {
   if (!machineName) return MACHINE_COLORS[0];
   if (machineColorMap.has(machineName)) return machineColorMap.get(machineName);
-  // Deterministic hash so every AMA server assigns the same color to
-  // the same machine name, regardless of discovery order.
-  let hash = 0;
+  // Deterministic hash (djb2) so every AMA server assigns the same color
+  // to the same machine name, regardless of discovery order.
+  let hash = 5381;
   for (let i = 0; i < machineName.length; i++) {
-    hash = ((hash << 5) - hash + machineName.charCodeAt(i)) | 0;
+    hash = ((hash * 33) ^ machineName.charCodeAt(i)) >>> 0;
   }
-  const idx = ((hash % MACHINE_COLORS.length) + MACHINE_COLORS.length) % MACHINE_COLORS.length;
+  const idx = hash % MACHINE_COLORS.length;
   const color = MACHINE_COLORS[idx];
   machineColorMap.set(machineName, color);
   return color;
