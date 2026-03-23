@@ -301,11 +301,12 @@ function renderSessions() {
   container.innerHTML = filtered
     .map(
       (s) => `
-    <div class="session-card${state.activeSession === s.name ? " active" : ""}"
+    <div class="session-card${isActiveSession(s.name, s.machineHost) ? " active" : ""}"
          data-name="${esc(s.name)}"
          data-pane="${esc(s.paneId)}"
          data-machine="${esc(s.machine)}"
-         data-machine-host="${esc(s.machineHost)}">
+         data-machine-host="${esc(s.machineHost)}"
+         data-session-key="${esc(sessionKey(s.name, s.machineHost))}">
       <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
       <div class="session-info">
         <div class="session-top-row">
@@ -423,10 +424,27 @@ const machineColorMap = new Map();
 function machineColor(machineName) {
   if (!machineName) return MACHINE_COLORS[0];
   if (machineColorMap.has(machineName)) return machineColorMap.get(machineName);
-  const idx = machineColorMap.size % MACHINE_COLORS.length;
+  // Deterministic hash so every AMA server assigns the same color to
+  // the same machine name, regardless of discovery order.
+  let hash = 0;
+  for (let i = 0; i < machineName.length; i++) {
+    hash = ((hash << 5) - hash + machineName.charCodeAt(i)) | 0;
+  }
+  const idx = ((hash % MACHINE_COLORS.length) + MACHINE_COLORS.length) % MACHINE_COLORS.length;
   const color = MACHINE_COLORS[idx];
   machineColorMap.set(machineName, color);
   return color;
+}
+
+/** Unique key for a session across machines. */
+function sessionKey(name, machineHost) {
+  return `${machineHost || "local"}::${name}`;
+}
+
+/** Check if a session matches the currently active session. */
+function isActiveSession(name, machineHost) {
+  return name === state.activeSession
+    && (machineHost || "local") === (state.activeSessionMeta?.machineHost || "local");
 }
 
 function esc(str) {
@@ -486,7 +504,7 @@ function navigateNextSession() {
   const sessions = state.sessions.filter((s) => s.paneId);
   if (sessions.length === 0) return;
 
-  const currentIdx = sessions.findIndex((s) => s.name === state.activeSession);
+  const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
   const nextIdx = (currentIdx + 1) % sessions.length;
   const next = sessions[nextIdx];
   openTerminal(next.name, next.machineHost);
@@ -496,7 +514,7 @@ function navigatePrevSession() {
   const sessions = state.sessions.filter((s) => s.paneId);
   if (sessions.length === 0) return;
 
-  const currentIdx = sessions.findIndex((s) => s.name === state.activeSession);
+  const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
   const prevIdx = (currentIdx - 1 + sessions.length) % sessions.length;
   const prev = sessions[prevIdx];
   openTerminal(prev.name, prev.machineHost);
@@ -509,7 +527,7 @@ function updatePositionIndicator() {
     if (el) el.textContent = "";
     return;
   }
-  const idx = sessions.findIndex((s) => s.name === state.activeSession);
+  const idx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
   el.textContent = idx >= 0 ? `${idx + 1} of ${sessions.length}` : "";
 }
 
@@ -522,8 +540,9 @@ function openTerminal(sessionName, machineHost = "local") {
   showView("terminal");
 
   // Highlight active card on desktop
+  const activeKey = sessionKey(sessionName, machineHost);
   document.querySelectorAll(".session-card").forEach((c) => {
-    c.classList.toggle("active", c.dataset.name === sessionName);
+    c.classList.toggle("active", c.dataset.sessionKey === activeKey);
   });
 
   // Cleanup previous
@@ -600,7 +619,7 @@ function openTerminal(sessionName, machineHost = "local") {
   // Poll for status updates
   state.pollInterval = setInterval(async () => {
     try {
-      const session = state.sessions.find((s) => s.name === sessionName);
+      const session = state.sessions.find((s) => s.name === sessionName && (s.machineHost || "local") === machineHost);
       const target = session?.paneId || sessionName;
       const { status } = await api.capturePane(target, machineHost);
       const dot = $("#terminal-status-dot");
