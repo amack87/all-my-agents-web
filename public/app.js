@@ -493,8 +493,10 @@ function patchPaste(term, getWs) {
     if (text) {
       ws.send(JSON.stringify({ type: "input", data: text }));
       e.preventDefault();
+      // Stop xterm's own paste handler from also sending the text
+      e.stopImmediatePropagation();
     }
-  });
+  }, { capture: true });
 }
 
 // --- Session Navigation ---
