@@ -408,44 +408,6 @@ html, body {
   margin-left: 4px;
 }
 
-.switching-overlay {
-  position: absolute;
-  inset: 0;
-  background: rgba(0,0,0,0.85);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 100;
-  transition: opacity 0.2s;
-}
-
-.switching-overlay.hidden {
-  opacity: 0;
-  pointer-events: none;
-}
-
-.switching-content {
-  text-align: center;
-}
-
-#switching-text {
-  font-size: 18px;
-  font-weight: 600;
-  margin-bottom: 16px;
-}
-
-.countdown {
-  font-size: 48px;
-  font-weight: 700;
-  color: var(--accent);
-  font-variant-numeric: tabular-nums;
-}
-
-.switching-hint {
-  margin-top: 16px;
-  color: var(--text-dim);
-  font-size: 14px;
-}
 
 /* --- Modal --- */
 .modal {

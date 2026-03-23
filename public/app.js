@@ -130,9 +130,6 @@ const state = {
   peerStatus: {},
   machineFilter: "all",
   hasPeers: false,
-  // Auto-advance (after user input, switch to next session when agent starts working)
-  lastInputTime: 0,
-  switchingTimer: null,
   // Resilience
   sessionsLoadInFlight: false,
   sessionsLoadQueued: false,
@@ -516,44 +513,6 @@ function updatePositionIndicator() {
   el.textContent = idx >= 0 ? `${idx + 1} of ${sessions.length}` : "";
 }
 
-function showSwitchingOverlay() {
-  if (state.switchingTimer) return;
-
-  const sessions = state.sessions.filter((s) => s.paneId);
-  const currentIdx = sessions.findIndex((s) => s.name === state.activeSession);
-  const nextIdx = (currentIdx + 1) % sessions.length;
-  const nextSession = sessions[nextIdx];
-  if (!nextSession || nextSession.name === state.activeSession) return;
-
-  const overlay = $("#terminal-switching-overlay");
-  const countdownEl = $("#switching-countdown");
-  $("#switching-text").textContent = `Switching to ${nextSession.name}...`;
-  overlay.classList.remove("hidden");
-
-  let count = 3;
-  countdownEl.textContent = count;
-
-  state.switchingTimer = setInterval(() => {
-    count--;
-    countdownEl.textContent = count;
-    if (count <= 0) {
-      clearInterval(state.switchingTimer);
-      state.switchingTimer = null;
-      overlay.classList.add("hidden");
-      navigateNextSession();
-    }
-  }, 1000);
-
-  const skipHandler = () => {
-    clearInterval(state.switchingTimer);
-    state.switchingTimer = null;
-    overlay.classList.add("hidden");
-    overlay.removeEventListener("click", skipHandler);
-    navigateNextSession();
-  };
-  overlay.addEventListener("click", skipHandler);
-}
-
 // --- Terminal ---
 function openTerminal(sessionName, machineHost = "local") {
   state.activeSession = sessionName;
@@ -638,7 +597,7 @@ function openTerminal(sessionName, machineHost = "local") {
   window.addEventListener("resize", resizeHandler);
   state._resizeHandler = resizeHandler;
 
-  // Poll for status updates + auto-advance detection
+  // Poll for status updates
   state.pollInterval = setInterval(async () => {
     try {
       const session = state.sessions.find((s) => s.name === sessionName);
@@ -647,11 +606,6 @@ function openTerminal(sessionName, machineHost = "local") {
       const dot = $("#terminal-status-dot");
       dot.className = `status-dot ${status}`;
       state.terminalPollFailures = 0;
-
-      // Auto-advance: if agent started working after user sent input
-      if (status === "working" && Date.now() - state.lastInputTime < 5000) {
-        showSwitchingOverlay();
-      }
     } catch {
       state.terminalPollFailures++;
       // If pane/status polling repeatedly fails, reopen the terminal automatically.
@@ -806,10 +760,6 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
     if (ws.readyState === 1) {
       onUserInput(data);
       ws.send(JSON.stringify({ type: "input", data }));
-      // Track Enter for auto-advance detection
-      if (data === "\r" || data === "\n") {
-        state.lastInputTime = Date.now();
-      }
     }
   });
 
@@ -818,13 +768,6 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
 }
 
 function cleanupTerminal() {
-  if (state.switchingTimer) {
-    clearInterval(state.switchingTimer);
-    state.switchingTimer = null;
-  }
-  const overlay = $("#terminal-switching-overlay");
-  if (overlay) overlay.classList.add("hidden");
-
   if (state.terminalReconnectTimer) {
     clearTimeout(state.terminalReconnectTimer);
     state.terminalReconnectTimer = null;
