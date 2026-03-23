@@ -435,26 +435,83 @@ async function discoverSessions() {
 
 function detectStatus(content) {
   const lines = content.split("\n").slice(-25);
-  const text = lines.join("\n");
 
-  // Strong working signals
-  if (text.includes("esc to interrupt")) return "working";
-  if (/\d+ tokens/.test(text) && /\d+[ms]/.test(text)) return "working";
+  // The Claude Code UI renders a status bar in the last ~4 lines of the pane:
+  //   ───────────────────
+  //   ❯ (input area)
+  //   ───────────────────
+  //   ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt
+  // Only check these bottom lines for status-bar keywords to avoid matching
+  // conversation history that happens to contain words like "Generating".
+  const statusBarLines = lines.slice(-5);
 
-  // Needs input signals
-  if (text.includes("esc to cancel")) return "needsInput";
-  if (/❯\s+\d+\./.test(text)) return "needsInput";      // numbered list selection
-  if (/\d+\.\s+Yes/.test(text)) return "needsInput";     // plan confirmation prompts
-  if (/\(y\/n\)/.test(text)) return "needsInput";
-  if (/Allow/.test(text) && /Deny/.test(text)) return "needsInput";
-  if (text.includes("ctrl-g to edit")) return "needsInput"; // plan mode prompt
-  if (text.includes("Type here to tell")) return "needsInput";
+  // --- Pass 1: Status bar signals (last 5 lines only) ---
+  for (const line of statusBarLines) {
+    const lower = line.toLowerCase();
 
-  // Idle - prompt visible
-  const lastLines = lines.slice(-5).join("\n");
-  if (/[❯$#%]\s*$/.test(lastLines)) return "idle";
+    // "esc to interrupt" = agent is actively working on a tool call
+    if (lower.includes("esc to interrupt")) return "working";
 
-  return "unknown";
+    // "esc to cancel" = tool approval dialog awaiting input
+    if (lower.includes("esc to cancel")) return "needsInput";
+  }
+
+  // --- Pass 2: Activity indicators in the content area ---
+  // These appear as standalone lines with a leading indicator character,
+  // e.g. "· Generating…" or "✻ Computing…" — NOT inside conversation text.
+  for (const line of lines) {
+    const trimmed = line.trim();
+
+    // Progress indicator with token count (e.g. "✽ 1234 tokens · 5s")
+    if (/token/.test(trimmed) && /\d+[ms]/.test(trimmed)) return "working";
+
+    // Activity spinner lines: "· Generating…", "✽ Swirling…", "✽ Galloping… (57s · ↓ 688 tokens)"
+    // Pattern: spinner char + space + word ending in … (ellipsis).
+    // ⏺ is Claude Code's output bullet (NOT a spinner) — do not include it.
+    if (/^[·✽•]\s+\S+[…]/.test(trimmed)) return "working";
+
+    // Status bar progress: "Auto · 55.5% · 2 files edited"
+    // Only match lines that look like a status bar (start with a keyword, contain middle-dot)
+    if (/^(auto|manual)\s+·/i.test(trimmed) && trimmed.includes("%")) return "working";
+  }
+
+  // --- Pass 3: Input signals in recent content ---
+  for (const line of lines) {
+    const lower = line.toLowerCase();
+
+    // Permission prompts
+    if (/\(y\/n\)/i.test(lower)) return "needsInput";
+    if (lower.includes("allow") && lower.includes("deny")) return "needsInput";
+  }
+
+  if (statusBarLines.some((l) => l.includes("ctrl-g to edit"))) return "needsInput";
+  if (lines.some((l) => l.includes("Type here to tell"))) return "needsInput";
+
+  // --- Pass 4: Check for command prompt and selection UI (per-line) ---
+  let hasCommandPrompt = false;
+  let hasSelectionCursor = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("❯")) continue;
+
+    const afterCursor = trimmed.slice("❯".length).trim();
+
+    // Selection cursor: ❯ followed by digit + "." on the SAME line (e.g. "❯ 1. Yes")
+    if (/^\d+\./.test(afterCursor)) {
+      hasSelectionCursor = true;
+    } else {
+      hasCommandPrompt = true;
+    }
+  }
+
+  if (hasSelectionCursor) return "needsInput";
+
+  // No prompt at all = still working
+  if (!hasCommandPrompt) return "working";
+
+  // Prompt visible with no active signals = idle
+  return "idle";
 }
 
 async function readClaudeSessionMeta() {

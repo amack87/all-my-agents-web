@@ -41,12 +41,7 @@
           <select id="machine-filter" class="machine-filter">
             <option value="all">All Machines</option>
           </select>
-          <button id="speedrun-btn" class="icon-btn" title="Speedrun">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polygon points="5,3 19,12 5,21"/>
-            </svg>
-          </button>
-          <button id="add-session-btn" class="icon-btn" title="New Session">
+<button id="add-session-btn" class="icon-btn" title="New Session">
             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
@@ -82,6 +77,7 @@
           <span id="terminal-session-name"></span>
           <span id="terminal-status-dot" class="status-dot"></span>
         </div>
+        <span id="terminal-position" class="terminal-position"></span>
         <button id="terminal-reconnect-btn" class="icon-btn" title="Reconnect">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/>
@@ -94,6 +90,13 @@
         </button>
       </header>
       <div id="terminal-container"></div>
+      <div id="terminal-switching-overlay" class="switching-overlay hidden">
+        <div class="switching-content">
+          <div id="switching-text">Switching to next agent...</div>
+          <div id="switching-countdown" class="countdown">3</div>
+          <div class="switching-hint">Tap anywhere to skip</div>
+        </div>
+      </div>
       <div id="terminal-toolbar" class="terminal-toolbar" data-mode="normal">
         <button class="toolbar-btn normal-btn" data-action="paste">Paste</button>
         <button class="toolbar-btn normal-btn" data-key="Escape">Esc</button>
