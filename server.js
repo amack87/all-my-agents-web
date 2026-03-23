@@ -443,7 +443,8 @@ function detectStatus(content) {
   //   ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt
   // Only check these bottom lines for status-bar keywords to avoid matching
   // conversation history that happens to contain words like "Generating".
-  const statusBarLines = lines.slice(-5);
+  // Use last 8 lines to account for trailing blank lines, "Checking for updates", etc.
+  const statusBarLines = lines.slice(-8);
 
   // --- Pass 1: Status bar signals (last 5 lines only) ---
   for (const line of statusBarLines) {
@@ -465,10 +466,12 @@ function detectStatus(content) {
     // Progress indicator with token count (e.g. "✽ 1234 tokens · 5s")
     if (/token/.test(trimmed) && /\d+[ms]/.test(trimmed)) return "working";
 
-    // Activity spinner lines: "· Generating…", "✽ Swirling…", "✽ Galloping… (57s · ↓ 688 tokens)"
-    // Pattern: spinner char + space + word ending in … (ellipsis).
-    // ⏺ is Claude Code's output bullet (NOT a spinner) — do not include it.
-    if (/^[·✽•]\s+\S+[…]/.test(trimmed)) return "working";
+    // Activity spinner lines: "✻ Gusting…", "✽ Swirling…", "✢ Befuddling…", "· Generating…"
+    // Claude Code uses various Unicode ornament chars as spinners:
+    //   ✻ ✽ ✢ ✣ ✤ ✥ · • ○ ◎ ◇ ◈ ☆ ★ ♦ ♢ ✦ ✧ ✩ ✪ ✫ ✬ ✭ ✮ ✯ ✰ ✱ ✲ ✳ ✴ ✵ ✶ ✷ ✸ ✹ ✺ ✼ ❂ ❃ ❇ ❈ ❉ ❊ ❋
+    // Pattern: non-ASCII ornament char + space + word + ellipsis.
+    // ⏺ is Claude Code's output bullet (NOT a spinner) — excluded via the \u2600-\u2767 range.
+    if (/^[\u00B7\u2022\u2600-\u2767\u2720-\u2767\u25CB\u25CE\u25C7\u25C8\u2606\u2605\u2666\u2662]\s+\S+…/.test(trimmed)) return "working";
 
     // Status bar progress: "Auto · 55.5% · 2 files edited"
     // Only match lines that look like a status bar (start with a keyword, contain middle-dot)
