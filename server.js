@@ -488,16 +488,19 @@ function detectStatus(content) {
   if (lines.some((l) => l.includes("Type here to tell"))) return "needsInput";
 
   // --- Pass 4: Check for command prompt and selection UI (per-line) ---
+  // ❯ = Claude Code prompt, › = Codex prompt
+  const PROMPT_CHARS = ["❯", "›"];
   let hasCommandPrompt = false;
   let hasSelectionCursor = false;
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!trimmed.startsWith("❯")) continue;
+    const promptChar = PROMPT_CHARS.find((c) => trimmed.startsWith(c));
+    if (!promptChar) continue;
 
-    const afterCursor = trimmed.slice("❯".length).trim();
+    const afterCursor = trimmed.slice(promptChar.length).trim();
 
-    // Selection cursor: ❯ followed by digit + "." on the SAME line (e.g. "❯ 1. Yes")
+    // Selection cursor: prompt char followed by digit + "." on the SAME line (e.g. "❯ 1. Yes")
     if (/^\d+\./.test(afterCursor)) {
       hasSelectionCursor = true;
     } else {
