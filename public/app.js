@@ -571,9 +571,29 @@ function openTerminal(sessionName, machineHost = "local") {
   term.loadAddon(unicode11);
   term.unicode.activeVersion = "11";
 
-  // Intercept Tab key for session navigation instead of sending to terminal
+  // Intercept Tab key for session navigation, but only when appropriate:
+  // - AI agent sessions (Claude, Codex, Cursor): always navigate (Tab has no use in their prompts)
+  // - Shell sessions: only navigate if the command line is empty (preserve Tab-completion)
+  const AI_AGENTS = new Set(["Claude Code", "Codex", "Cursor Agent"]);
+
   term.attachCustomKeyEventHandler((event) => {
     if (event.key === "Tab" && event.type === "keydown" && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      const session = state.sessions.find((s) => isActiveSession(s.name, s.machineHost));
+      const isAgent = session && AI_AGENTS.has(session.agent);
+
+      if (!isAgent) {
+        // Shell session: check if the cursor line has text after the prompt
+        const cursorY = term.buffer.active.cursorY;
+        const line = term.buffer.active.getLine(cursorY);
+        const lineText = line ? line.translateToString(true).trim() : "";
+        // If there's content (prompt + typed text), let Tab through for shell completion
+        // A bare prompt like "❯" or "$" or "%" is <= 1 char — allow navigate
+        const promptChars = /^[❯›$%#>]?\s*$/;
+        if (!promptChars.test(lineText)) {
+          return true; // pass Tab to terminal for shell completion
+        }
+      }
+
       event.preventDefault();
       if (event.shiftKey) {
         navigatePrevSession();
