@@ -471,6 +471,26 @@ function patchMobileInput(term, getWs) {
   });
 }
 
+// --- Paste Support ---
+// navigator.clipboard.readText() requires HTTPS and fails on HTTP (Tailscale).
+// Instead, listen for the browser's native paste event which works everywhere,
+// including mobile long-press → Paste and desktop Ctrl+V/Cmd+V.
+function patchPaste(term, getWs) {
+  const textarea = term.element?.querySelector(".xterm-helper-textarea");
+  if (!textarea) return;
+
+  textarea.addEventListener("paste", (e) => {
+    const ws = getWs();
+    if (!ws || ws.readyState !== 1) return;
+
+    const text = e.clipboardData?.getData("text");
+    if (text) {
+      ws.send(JSON.stringify({ type: "input", data: text }));
+      e.preventDefault();
+    }
+  });
+}
+
 // --- Terminal ---
 function openTerminal(sessionName, machineHost = "local") {
   state.activeSession = sessionName;
@@ -526,6 +546,8 @@ function openTerminal(sessionName, machineHost = "local") {
 
   // Patch mobile backspace key repeat
   patchMobileInput(term, () => state.ws);
+  // Patch paste (native browser paste event works on HTTP, unlike clipboard API)
+  patchPaste(term, () => state.ws);
 
   // Handle resize
   const resizeHandler = () => {
@@ -903,6 +925,7 @@ function openSpeedrunSession(index) {
 
   // Patch mobile backspace key repeat
   patchMobileInput(term, () => state.speedrunWs);
+  patchPaste(term, () => state.speedrunWs);
 
   // Setup toolbar
   setupToolbar("#speedrun-view .terminal-toolbar", term);
@@ -1035,17 +1058,21 @@ function setupToolbar(selector, term) {
       const ws = state.speedrunActive ? state.speedrunWs : state.ws;
 
       if (action === "paste") {
-        navigator.clipboard.readText().then((text) => {
-          if (text && ws?.readyState === 1) {
-            ws.send(JSON.stringify({ type: "input", data: text }));
-          }
-        }).catch(() => {
-          // Fallback: prompt user to paste
+        // Focus the terminal's hidden textarea and use execCommand("paste")
+        // to trigger the native paste flow. This works on HTTP (unlike
+        // navigator.clipboard.readText which requires HTTPS).
+        const term = state.speedrunActive ? state.speedrunTerminal : state.terminal;
+        const textarea = term?.element?.querySelector(".xterm-helper-textarea");
+        if (textarea) {
+          textarea.focus();
+          document.execCommand("paste");
+        } else {
+          // Last resort fallback: prompt
           const text = prompt("Paste text:");
           if (text && ws?.readyState === 1) {
             ws.send(JSON.stringify({ type: "input", data: text }));
           }
-        });
+        }
       } else if (action === "enter-scroll") {
         // Send Ctrl-B [ to enter tmux copy mode, then switch toolbar
         if (ws?.readyState === 1) {
@@ -1157,6 +1184,7 @@ function setAddSessionMode(mode) {
   if (mode === "new") {
     const input = $("#new-session-name");
     input.value = "";
+    populateMachinePicker();
     setTimeout(() => input.focus(), 100);
   }
 }
@@ -1168,11 +1196,63 @@ document.querySelectorAll("[data-mode]").forEach((btn) => {
 
 $("#modal-back").addEventListener("click", () => setAddSessionMode("pick"));
 
+function populateMachinePicker() {
+  const select = $("#new-session-machine");
+  const localName = state.identity?.name || "This machine";
+
+  // Collect known machines from current sessions + identity peers
+  const machines = [{ name: localName, host: "local" }];
+  const seenHosts = new Set(["local"]);
+
+  // Add peers from identity
+  if (state.identity?.peers) {
+    for (const peer of state.identity.peers) {
+      const host = `${peer.host}:${peer.port || 3456}`;
+      if (!seenHosts.has(host)) {
+        seenHosts.add(host);
+        machines.push({ name: peer.name || peer.host, host });
+      }
+    }
+  }
+
+  // Add any machines we've seen in sessions but aren't in identity peers
+  for (const s of state.sessions) {
+    if (s.machineHost && !seenHosts.has(s.machineHost)) {
+      seenHosts.add(s.machineHost);
+      machines.push({ name: s.machine || s.machineHost, host: s.machineHost });
+    }
+  }
+
+  select.innerHTML = machines
+    .map((m) => `<option value="${m.host}">${esc(m.name)}</option>`)
+    .join("");
+
+  // Only show if there are multiple machines
+  select.classList.toggle("hidden", machines.length <= 1);
+}
+
 async function createSession() {
   const name = $("#new-session-name").value.trim();
   if (!name) return;
 
-  const result = await api.createSession(name);
+  const machineHost = $("#new-session-machine").value || "local";
+
+  let result;
+  if (machineHost && machineHost !== "local") {
+    // Create on remote machine via proxy
+    result = await fetchJson(
+      apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions`),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      },
+      { timeoutMs: 7000 }
+    );
+  } else {
+    result = await api.createSession(name);
+  }
+
   if (result.error) {
     alert(result.error);
     return;
@@ -1180,8 +1260,8 @@ async function createSession() {
 
   hideNewSessionModal();
   await loadSessions();
-  // Auto-open the new session
-  openTerminal(name);
+  // Auto-open the new session (with machine context for remote)
+  openTerminal(name, machineHost !== "local" ? machineHost : undefined);
 }
 
 async function loadExistingSessions() {

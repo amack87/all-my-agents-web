@@ -223,6 +223,9 @@
         <!-- New session mode -->
         <div id="modal-new" class="modal-panel hidden">
           <input type="text" id="new-session-name" placeholder="Session name" autocapitalize="none" autocorrect="off" spellcheck="false">
+          <select id="new-session-machine" class="hidden" style="width:100%;padding:10px;border-radius:8px;border:1px solid #444;background:#1a1a2e;color:#e0e0e0;font-size:14px;margin-top:8px;">
+            <option value="local">This machine</option>
+          </select>
           <div class="modal-actions">
             <button id="modal-create" class="btn primary" style="flex:1">Create</button>
           </div>

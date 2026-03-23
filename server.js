@@ -120,8 +120,20 @@ app.get("/api/tmux-sessions", async (_req, res) => {
 });
 
 // List hibernated sessions (claude-hibernator — optional)
-// Set HIBERNATOR_CLI to the path of claude-hibernator's cli.py to enable.
-const HIBERNATOR_CLI = process.env.HIBERNATOR_CLI || null;
+// Set HIBERNATOR_CLI to the path of claude-hibernator's cli.py to enable,
+// or it will be auto-detected from common locations.
+const HIBERNATOR_CLI = (() => {
+  if (process.env.HIBERNATOR_CLI) return process.env.HIBERNATOR_CLI;
+  const candidates = [
+    join(os.homedir(), "Repos", "claude-hibernator", "cli.py"),
+    join(os.homedir(), ".local", "bin", "claude-hibernator", "cli.py"),
+    join(os.homedir(), "claude-hibernator", "cli.py"),
+  ];
+  for (const p of candidates) {
+    try { accessSync(p); return p; } catch { /* skip */ }
+  }
+  return null;
+})();
 
 app.get("/api/hibernated-sessions", async (_req, res) => {
   if (!HIBERNATOR_CLI) return res.json([]);
@@ -131,7 +143,8 @@ app.get("/api/hibernated-sessions", async (_req, res) => {
     ], { timeout: 5000 });
     const sessions = JSON.parse(stdout.trim());
     res.json(sessions);
-  } catch {
+  } catch (err) {
+    console.error("Hibernator error:", err.message);
     res.json([]);
   }
 });
