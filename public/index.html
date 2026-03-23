@@ -100,61 +100,7 @@
       <div id="terminal-toolbar" class="terminal-toolbar" data-mode="normal">
         <button class="toolbar-btn normal-btn" data-action="paste">Paste</button>
         <button class="toolbar-btn normal-btn" data-key="Escape">Esc</button>
-        <button class="toolbar-btn normal-btn" data-key="Tab">Tab</button>
-        <button class="toolbar-btn normal-btn" data-action="enter-scroll">Scroll</button>
-        <button class="toolbar-btn normal-btn" data-send="\x01">^A</button>
-        <button class="toolbar-btn normal-btn" data-send="\x03">^C</button>
-        <button class="toolbar-btn normal-btn" data-send="\x04">^D</button>
-        <button class="toolbar-btn normal-btn" data-send="\x0c">^L</button>
-        <button class="toolbar-btn normal-btn" data-key="ArrowUp">&uarr;</button>
-        <button class="toolbar-btn normal-btn" data-key="ArrowDown">&darr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-action="exit-scroll">Exit Scroll</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="ArrowUp">&uarr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="ArrowDown">&darr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="PageUp">PgUp</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="PageDown">PgDn</button>
-        <button class="toolbar-btn scroll-btn hidden" data-send="\x02[0">Top</button>
-        <button class="toolbar-btn scroll-btn hidden" data-send="\x02[G">Bottom</button>
-      </div>
-    </div>
-
-    <!-- Speedrun View -->
-    <div id="speedrun-view" class="view">
-      <header class="top-bar speedrun-bar">
-        <button id="speedrun-exit-btn" class="icon-btn" title="Exit Speedrun">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-          </svg>
-        </button>
-        <div class="speedrun-info">
-          <span id="speedrun-session-name"></span>
-          <span id="speedrun-position"></span>
-        </div>
-        <div class="speedrun-nav">
-          <button id="speedrun-prev" class="icon-btn" title="Previous">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M15 18l-6-6 6-6"/>
-            </svg>
-          </button>
-          <button id="speedrun-next" class="icon-btn" title="Next">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M9 18l6-6-6-6"/>
-            </svg>
-          </button>
-        </div>
-      </header>
-      <div id="speedrun-terminal-container"></div>
-      <div id="speedrun-switching-overlay" class="switching-overlay hidden">
-        <div class="switching-content">
-          <div id="switching-text">Switching to next agent...</div>
-          <div id="switching-countdown" class="countdown">3</div>
-          <div class="switching-hint">Tap anywhere to skip</div>
-        </div>
-      </div>
-      <div id="speedrun-toolbar" class="terminal-toolbar" data-mode="normal">
-        <button class="toolbar-btn normal-btn" data-action="paste">Paste</button>
-        <button class="toolbar-btn normal-btn" data-key="Escape">Esc</button>
-        <button class="toolbar-btn normal-btn" data-key="Tab">Tab</button>
+        <button class="toolbar-btn normal-btn" data-action="next-session">Next</button>
         <button class="toolbar-btn normal-btn" data-action="enter-scroll">Scroll</button>
         <button class="toolbar-btn normal-btn" data-send="\x01">^A</button>
         <button class="toolbar-btn normal-btn" data-send="\x03">^C</button>
