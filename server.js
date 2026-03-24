@@ -5,10 +5,28 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { accessSync } from "node:fs";
+import { accessSync, createWriteStream, mkdirSync } from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
 import { resolveConfig, fetchAllMeshSessions } from "./mesh.js";
+
+// --- Logging ---
+const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
+mkdirSync(LOG_DIR, { recursive: true });
+const logStream = createWriteStream(join(LOG_DIR, "server.log"), { flags: "a" });
+
+function log(level, msg, extra) {
+  const ts = new Date().toISOString();
+  const line = extra
+    ? `${ts} [${level}] ${msg} ${JSON.stringify(extra)}`
+    : `${ts} [${level}] ${msg}`;
+  if (level === "ERROR") {
+    console.error(line);
+  } else {
+    console.log(line);
+  }
+  logStream.write(line + "\n");
+}
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -144,7 +162,7 @@ app.get("/api/hibernated-sessions", async (_req, res) => {
     const sessions = JSON.parse(stdout.trim());
     res.json(sessions);
   } catch (err) {
-    console.error("Hibernator error:", err.message);
+    log("ERROR", "Hibernator error", { error: err.message });
     res.json([]);
   }
 });
@@ -206,12 +224,27 @@ import pty from "node-pty";
 
 app.ws("/ws/terminal/:target", async (ws, req) => {
   const target = req.params.target;
+  log("INFO", "WS connect", { target, remoteAddr: req.ip });
 
   if (!TMUX_TARGET_RE.test(target)) {
     ws.send(JSON.stringify({ type: "error", message: "Invalid session target" }));
     ws.close();
     return;
   }
+
+  // Heartbeat: server pings every 30s, terminates if no pong within 10s
+  let alive = true;
+  const heartbeat = setInterval(() => {
+    if (!alive) {
+      log("WARN", "WS pong timeout, terminating", { target });
+      clearInterval(heartbeat);
+      ws.terminate();
+      return;
+    }
+    alive = false;
+    ws.ping();
+  }, 30_000);
+  ws.on("pong", () => { alive = true; });
 
   // Strip TMUX env var so tmux attach works when server runs inside tmux
   const cleanEnv = { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
@@ -233,7 +266,7 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
         env: cleanEnv,
       });
     } catch (err) {
-      console.error("Terminal spawn error:", err.message);
+      log("ERROR", "Terminal spawn error", { target, error: err.message });
       if (ws.readyState === 1) {
         ws.send(JSON.stringify({ type: "error", message: err.message }));
         ws.close();
@@ -298,7 +331,9 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
     }
   });
 
-  ws.on("close", () => {
+  ws.on("close", (code, reason) => {
+    clearInterval(heartbeat);
+    log("INFO", "WS disconnect", { target, code, reason: reason?.toString() });
     if (ptyProcess) {
       // Detach cleanly instead of killing the tmux session
       try { ptyProcess.write("\x02d"); } catch { /* ignore */ }
@@ -455,6 +490,9 @@ function detectStatus(content) {
 
     // "esc to cancel" = tool approval dialog awaiting input
     if (lower.includes("esc to cancel")) return "needsInput";
+
+    // "accept edits" = edit review prompt awaiting user action
+    if (lower.includes("accept edits")) return "needsInput";
   }
 
   // --- Pass 2: Activity indicators in the content area ---
@@ -626,12 +664,27 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
   const config = await resolveConfig();
   const peerHost = req.params.peerHost;
   const target = req.params.target;
+  log("INFO", "WS proxy connect", { peer: peerHost, target, remoteAddr: req.ip });
 
   if (!PEER_HOST_RE.test(peerHost) || !config.peers.some((p) => `${p.host}:${p.port || PORT}` === peerHost)) {
     clientWs.send(JSON.stringify({ type: "error", message: "Invalid or unauthorized peer" }));
     clientWs.close();
     return;
   }
+
+  // Heartbeat on client-facing side of the proxy
+  let proxyAlive = true;
+  const proxyHeartbeat = setInterval(() => {
+    if (!proxyAlive) {
+      log("WARN", "WS proxy pong timeout", { peer: peerHost, target });
+      clearInterval(proxyHeartbeat);
+      clientWs.terminate();
+      return;
+    }
+    proxyAlive = false;
+    clientWs.ping();
+  }, 30_000);
+  clientWs.on("pong", () => { proxyAlive = true; });
 
   const remoteUrl = `ws://${peerHost}/ws/terminal/${encodeURIComponent(target)}`;
   let remoteWs;
@@ -669,7 +722,7 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
   });
 
   remoteWs.on("error", (err) => {
-    console.error("Mesh proxy remote error:", err.message);
+    log("ERROR", "Mesh proxy remote error", { peer: peerHost, error: err.message });
     if (clientWs.readyState === 1) {
       clientWs.send(JSON.stringify({ type: "error", message: `Remote: ${err.message}` }));
       clientWs.close();
@@ -684,7 +737,9 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
     }
   });
 
-  clientWs.on("close", () => {
+  clientWs.on("close", (code, reason) => {
+    clearInterval(proxyHeartbeat);
+    log("INFO", "WS proxy disconnect", { peer: peerHost, target, code, reason: reason?.toString() });
     if (remoteWs.readyState === 1) {
       remoteWs.close();
     }
@@ -693,6 +748,6 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
 
 // --- Start ---
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`All My Agents Mobile running on http://0.0.0.0:${PORT}`);
-  console.log(`Access from phone via Tailscale IP on port ${PORT}`);
+  log("INFO", `Server started on http://0.0.0.0:${PORT}`);
+  log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
 });
