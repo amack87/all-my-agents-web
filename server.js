@@ -469,7 +469,12 @@ async function discoverSessions() {
 }
 
 function detectStatus(content) {
-  const lines = content.split("\n").slice(-25);
+  // Strip trailing blank lines — capture-pane includes empty pane padding
+  const allLines = content.split("\n");
+  while (allLines.length > 0 && allLines[allLines.length - 1].trim() === "") {
+    allLines.pop();
+  }
+  const lines = allLines.slice(-25);
 
   // The Claude Code UI renders a status bar in the last ~4 lines of the pane:
   //   ───────────────────
