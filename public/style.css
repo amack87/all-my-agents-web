@@ -200,6 +200,16 @@ html, body {
   flex-shrink: 0;
 }
 
+.session-command {
+  white-space: nowrap;
+  flex-shrink: 0;
+  opacity: 0.6;
+}
+
+.session-command::before {
+  content: "\00b7\00a0";
+}
+
 .session-project {
   white-space: nowrap;
   overflow: hidden;

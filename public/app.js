@@ -292,6 +292,7 @@ function renderSessions() {
       s.status || "",
       s.agent || "",
       s.projectPath || "",
+      s.currentCommand || "",
       s.paneId || "",
       s.lastActivity || 0,
     ].join("|")),
@@ -325,6 +326,7 @@ function renderSessions() {
         </div>
         <div class="session-bottom-row">
           <span class="session-agent">${esc(s.agent || "shell")}</span>
+          ${isInterestingCommand(s.currentCommand, s.agent) ? `<span class="session-command">${esc(s.currentCommand)}</span>` : ""}
           ${s.projectPath ? `<span class="session-project">${esc(s.projectPath)}</span>` : ""}
         </div>
       </div>
@@ -376,6 +378,19 @@ function renderPeerStatus() {
     filter.innerHTML += `<option value="${esc(m)}"${m === currentVal ? " selected" : ""}>${esc(m)}</option>`;
   }
   filter.classList.toggle("hidden", machines.size <= 1);
+}
+
+const SHELL_COMMANDS = new Set(["zsh", "bash", "sh", "fish", "dash", "tcsh", "csh", "login"]);
+
+function isInterestingCommand(cmd, agent) {
+  if (!cmd) return false;
+  const base = cmd.split("/").pop().toLowerCase();
+  if (SHELL_COMMANDS.has(base)) return false;
+  // Skip version strings (e.g. "2.1.81")
+  if (/^\d[\d.]*$/.test(base)) return false;
+  // Skip if it just duplicates the agent label
+  if (agent && base === agent.toLowerCase()) return false;
+  return true;
 }
 
 function statusLabel(status) {
