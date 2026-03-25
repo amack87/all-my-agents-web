@@ -419,15 +419,39 @@ function renderSessions() {
 
   // Partition sessions into groups and ungrouped
   const sessionsByKey = new Map(filtered.map((s) => [sessionKey(s.name, s.machineHost), s]));
+  // Also index by name for fuzzy matching when machineHost changes
+  const sessionsByName = new Map();
+  for (const s of filtered) {
+    if (!sessionsByName.has(s.name)) sessionsByName.set(s.name, s);
+  }
   const groupedKeys = new Set();
   const html = [];
 
   // Render groups in order
   for (const groupName of groupData.order) {
-    const members = (groupData.groups[groupName] || [])
-      .filter((k) => sessionsByKey.has(k));
-    if (members.length === 0) continue;
-    members.forEach((k) => groupedKeys.add(k));
+    const storedKeys = groupData.groups[groupName] || [];
+    // Resolve stored keys: try exact match first, then fall back to name match
+    const resolvedSessions = [];
+    for (const k of storedKeys) {
+      if (sessionsByKey.has(k)) {
+        resolvedSessions.push({ key: k, session: sessionsByKey.get(k) });
+      } else {
+        // Try matching by name (part after "::")
+        const name = k.includes("::") ? k.split("::").slice(1).join("::") : k;
+        const s = sessionsByName.get(name);
+        if (s) {
+          resolvedSessions.push({ key: sessionKey(s.name, s.machineHost), session: s });
+        }
+      }
+    }
+    if (resolvedSessions.length === 0) continue;
+    // Self-heal: update stored keys if they changed (e.g. machineHost changed)
+    const resolvedKeys = resolvedSessions.map(({ key }) => key);
+    if (JSON.stringify(resolvedKeys) !== JSON.stringify(storedKeys)) {
+      groupData.groups[groupName] = resolvedKeys;
+      saveGroups(groupData);
+    }
+    resolvedSessions.forEach(({ key }) => groupedKeys.add(key));
 
     const isCollapsed = groupData.collapsed[groupName] || false;
     html.push(`
@@ -435,10 +459,10 @@ function renderSessions() {
         <div class="session-group-header" data-group="${esc(groupName)}">
           <span class="group-chevron${isCollapsed ? " collapsed" : ""}">&#9662;</span>
           <span class="group-name">${esc(groupName)}</span>
-          <span class="group-count">${members.length}</span>
+          <span class="group-count">${resolvedSessions.length}</span>
         </div>
         ${isCollapsed ? "" : `<div class="session-group-body">
-          ${members.map((k) => renderSessionCard(sessionsByKey.get(k), showMachineLabel)).join("")}
+          ${resolvedSessions.map(({ session }) => renderSessionCard(session, showMachineLabel)).join("")}
         </div>`}
       </div>`);
   }
