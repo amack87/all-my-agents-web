@@ -480,7 +480,8 @@ function detectStatus(content) {
   //   ───────────────────
   //   ❯ (input area)
   //   ───────────────────
-  //   ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt
+  //   ⏵⏵ accept edits on (shift+tab to cycle) · esc to interrupt  (when working)
+  //   ⏵⏵ accept edits on (shift+tab to cycle)                     (when idle — mode indicator only)
   // Only check these bottom lines for status-bar keywords to avoid matching
   // conversation history that happens to contain words like "Generating".
   // Use last 8 lines to account for trailing blank lines, "Checking for updates", etc.
@@ -495,9 +496,6 @@ function detectStatus(content) {
 
     // "esc to cancel" = tool approval dialog awaiting input
     if (lower.includes("esc to cancel")) return "needsInput";
-
-    // "accept edits" = edit review prompt awaiting user action
-    if (lower.includes("accept edits")) return "needsInput";
   }
 
   // --- Pass 2: Activity indicators in the content area ---
