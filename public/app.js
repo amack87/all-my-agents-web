@@ -612,6 +612,9 @@ function openTerminal(sessionName, machineHost = "local") {
   container.style.opacity = "0";
   term.open(container);
 
+  // Block wheel/trackpad scroll — scrollback should use arrow keys or tmux copy mode only
+  container.addEventListener("wheel", (e) => { e.preventDefault(); }, { passive: false });
+
   // Short delay for DOM to settle before fitting
   requestAnimationFrame(() => {
     fitAddon.fit();
