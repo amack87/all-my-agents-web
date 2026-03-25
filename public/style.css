@@ -705,8 +705,7 @@ html, body {
 }
 
 .xterm-viewport {
-  overflow-y: auto !important;
-  -webkit-overflow-scrolling: touch;
+  overflow-y: hidden !important;
 }
 
 /* --- Desktop Responsive Layout --- */
