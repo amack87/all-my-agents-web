@@ -1200,8 +1200,15 @@ function hideDeleteModal() {
 
 async function doDelete() {
   if (!state._deleteTarget) return;
-  const wasActive = state._deleteTarget === state.activeSession;
-  await api.deleteSession(state._deleteTarget, state._deleteTargetHost);
+  const deleteName = state._deleteTarget;
+  const deleteHost = state._deleteTargetHost;
+  const wasActive = deleteName === state.activeSession;
+  await api.deleteSession(deleteName, deleteHost);
+  // Eagerly remove the killed session so it disappears even if the next mesh fetch fails
+  state.sessions = state.sessions.filter(
+    (s) => !(s.name === deleteName && s.machineHost === deleteHost)
+  );
+  renderSessions();
   hideDeleteModal();
   if (wasActive) {
     closeTerminal();
