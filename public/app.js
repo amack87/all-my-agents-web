@@ -1188,9 +1188,14 @@ function hideDeleteModal() {
 
 async function doDelete() {
   if (!state._deleteTarget) return;
+  const wasActive = state._deleteTarget === state.activeSession;
   await api.deleteSession(state._deleteTarget, state._deleteTargetHost);
   hideDeleteModal();
-  await loadSessions();
+  if (wasActive) {
+    closeTerminal();
+  } else {
+    await loadSessions();
+  }
 }
 
 // --- Event Bindings ---
