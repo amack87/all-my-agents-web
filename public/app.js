@@ -636,8 +636,13 @@ function openTerminal(sessionName, machineHost = "local") {
   container.style.opacity = "0";
   term.open(container);
 
-  // Block wheel/trackpad scroll — scrollback should use arrow keys or tmux copy mode only
-  container.addEventListener("wheel", (e) => { e.preventDefault(); }, { passive: false });
+  // Block wheel/trackpad scroll — scrollback should use arrow keys or tmux copy mode only.
+  // Use capture phase on both the container and xterm's viewport to intercept before xterm handles it.
+  container.addEventListener("wheel", (e) => { e.preventDefault(); e.stopPropagation(); }, { passive: false, capture: true });
+  const xtermViewport = container.querySelector(".xterm-viewport");
+  if (xtermViewport) {
+    xtermViewport.addEventListener("wheel", (e) => { e.preventDefault(); e.stopPropagation(); }, { passive: false, capture: true });
+  }
 
   // Short delay for DOM to settle before fitting
   requestAnimationFrame(() => {
