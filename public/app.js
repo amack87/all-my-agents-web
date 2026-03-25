@@ -563,7 +563,7 @@ function openTerminal(sessionName, machineHost = "local") {
     },
     cursorBlink: true,
     allowProposedApi: true,
-    scrollback: 5000,
+    scrollback: 0,
   });
 
   const fitAddon = new FitAddon();
