@@ -142,6 +142,89 @@ const state = {
   renderedSessionsSignature: "",
 };
 
+// --- Session Groups (localStorage-backed) ---
+const GROUPS_STORAGE_KEY = "allmyagents-session-groups";
+
+function loadGroups() {
+  try {
+    const raw = localStorage.getItem(GROUPS_STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch { /* ignore */ }
+  return { groups: {}, collapsed: {}, order: [] };
+}
+
+function saveGroups(data) {
+  localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(data));
+}
+
+function getGroups() {
+  return loadGroups();
+}
+
+function createGroup(name) {
+  const data = loadGroups();
+  if (!data.groups[name]) {
+    data.groups[name] = [];
+    data.order = [...data.order.filter((n) => n !== name), name];
+  }
+  saveGroups(data);
+}
+
+function deleteGroup(name) {
+  const data = loadGroups();
+  delete data.groups[name];
+  delete data.collapsed[name];
+  data.order = data.order.filter((n) => n !== name);
+  saveGroups(data);
+}
+
+function renameGroup(oldName, newName) {
+  if (oldName === newName) return;
+  const data = loadGroups();
+  data.groups[newName] = data.groups[oldName] || [];
+  data.collapsed[newName] = data.collapsed[oldName] || false;
+  delete data.groups[oldName];
+  delete data.collapsed[oldName];
+  data.order = data.order.map((n) => (n === oldName ? newName : n));
+  saveGroups(data);
+}
+
+function addToGroup(groupName, sKey) {
+  const data = loadGroups();
+  // Remove from any existing group first
+  for (const [gn, members] of Object.entries(data.groups)) {
+    data.groups[gn] = members.filter((k) => k !== sKey);
+  }
+  if (!data.groups[groupName]) {
+    data.groups[groupName] = [];
+    data.order = [...data.order.filter((n) => n !== groupName), groupName];
+  }
+  data.groups[groupName] = [...data.groups[groupName], sKey];
+  saveGroups(data);
+}
+
+function removeFromGroup(sKey) {
+  const data = loadGroups();
+  for (const [gn, members] of Object.entries(data.groups)) {
+    data.groups[gn] = members.filter((k) => k !== sKey);
+  }
+  saveGroups(data);
+}
+
+function toggleGroupCollapsed(groupName) {
+  const data = loadGroups();
+  data.collapsed[groupName] = !data.collapsed[groupName];
+  saveGroups(data);
+}
+
+function getSessionGroup(sKey) {
+  const data = loadGroups();
+  for (const [gn, members] of Object.entries(data.groups)) {
+    if (members.includes(sKey)) return gn;
+  }
+  return null;
+}
+
 // --- API ---
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -274,6 +357,30 @@ async function loadSessions() {
   }
 }
 
+function renderSessionCard(s, showMachineLabel) {
+  return `
+    <div class="session-card${isActiveSession(s.name, s.machineHost) ? " active" : ""}"
+         data-name="${esc(s.name)}"
+         data-pane="${esc(s.paneId)}"
+         data-machine="${esc(s.machine)}"
+         data-machine-host="${esc(s.machineHost)}"
+         data-session-key="${esc(sessionKey(s.name, s.machineHost))}">
+      <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
+      <div class="session-info">
+        <div class="session-top-row">
+          <span class="session-name">${esc(s.name)}</span>
+          ${showMachineLabel ? `<span class="machine-badge" style="background:${machineColor(s.machine).bg};color:${machineColor(s.machine).fg}">${esc(s.machine)}</span>` : ""}
+          <span class="session-status-label ${s.status}">${statusLabel(s.status)}</span>
+        </div>
+        <div class="session-bottom-row">
+          <span class="session-agent">${esc(s.agent || "shell")}</span>
+          ${isInterestingCommand(s.currentCommand, s.agent) ? `<span class="session-command">${esc(s.currentCommand)}</span>` : ""}
+          ${s.projectPath ? `<span class="session-project">${esc(s.projectPath)}</span>` : ""}
+        </div>
+      </div>
+    </div>`;
+}
+
 function renderSessions() {
   const container = $("#sessions-container");
 
@@ -281,10 +388,12 @@ function renderSessions() {
     ? state.sessions
     : state.sessions.filter((s) => s.machine === state.machineFilter);
 
+  const groupData = getGroups();
   const signature = [
     state.machineFilter,
     state.hasPeers ? "peers" : "local",
     state.activeSession || "",
+    JSON.stringify(groupData),
     ...filtered.map((s) => [
       s.name,
       s.machine || "",
@@ -308,44 +417,79 @@ function renderSessions() {
 
   const showMachineLabel = state.hasPeers;
 
-  container.innerHTML = filtered
-    .map(
-      (s) => `
-    <div class="session-card${isActiveSession(s.name, s.machineHost) ? " active" : ""}"
-         data-name="${esc(s.name)}"
-         data-pane="${esc(s.paneId)}"
-         data-machine="${esc(s.machine)}"
-         data-machine-host="${esc(s.machineHost)}"
-         data-session-key="${esc(sessionKey(s.name, s.machineHost))}">
-      <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
-      <div class="session-info">
-        <div class="session-top-row">
-          <span class="session-name">${esc(s.name)}</span>
-          ${showMachineLabel ? `<span class="machine-badge" style="background:${machineColor(s.machine).bg};color:${machineColor(s.machine).fg}">${esc(s.machine)}</span>` : ""}
-          <span class="session-status-label ${s.status}">${statusLabel(s.status)}</span>
-        </div>
-        <div class="session-bottom-row">
-          <span class="session-agent">${esc(s.agent || "shell")}</span>
-          ${isInterestingCommand(s.currentCommand, s.agent) ? `<span class="session-command">${esc(s.currentCommand)}</span>` : ""}
-          ${s.projectPath ? `<span class="session-project">${esc(s.projectPath)}</span>` : ""}
-        </div>
-      </div>
-    </div>
-  `
-    )
-    .join("");
+  // Partition sessions into groups and ungrouped
+  const sessionsByKey = new Map(filtered.map((s) => [sessionKey(s.name, s.machineHost), s]));
+  const groupedKeys = new Set();
+  const html = [];
 
+  // Render groups in order
+  for (const groupName of groupData.order) {
+    const members = (groupData.groups[groupName] || [])
+      .filter((k) => sessionsByKey.has(k));
+    if (members.length === 0) continue;
+    members.forEach((k) => groupedKeys.add(k));
+
+    const isCollapsed = groupData.collapsed[groupName] || false;
+    html.push(`
+      <div class="session-group" data-group="${esc(groupName)}">
+        <div class="session-group-header" data-group="${esc(groupName)}">
+          <span class="group-chevron${isCollapsed ? " collapsed" : ""}">&#9662;</span>
+          <span class="group-name">${esc(groupName)}</span>
+          <span class="group-count">${members.length}</span>
+        </div>
+        ${isCollapsed ? "" : `<div class="session-group-body">
+          ${members.map((k) => renderSessionCard(sessionsByKey.get(k), showMachineLabel)).join("")}
+        </div>`}
+      </div>`);
+  }
+
+  // Render ungrouped sessions
+  const ungrouped = filtered.filter((s) => !groupedKeys.has(sessionKey(s.name, s.machineHost)));
+  html.push(...ungrouped.map((s) => renderSessionCard(s, showMachineLabel)));
+
+  container.innerHTML = html.join("");
+
+  // Bind group header toggle
+  container.querySelectorAll(".session-group-header").forEach((header) => {
+    header.addEventListener("click", () => {
+      toggleGroupCollapsed(header.dataset.group);
+      state.renderedSessionsSignature = ""; // force re-render
+      renderSessions();
+    });
+    // Right-click / long-press on group header for group actions
+    header.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showGroupContextMenu(e, header.dataset.group);
+    });
+    let pressTimer;
+    header.addEventListener("touchstart", (e) => {
+      pressTimer = setTimeout(() => {
+        e.preventDefault();
+        showGroupContextMenu(e, header.dataset.group);
+      }, 600);
+    });
+    header.addEventListener("touchend", () => clearTimeout(pressTimer));
+    header.addEventListener("touchmove", () => clearTimeout(pressTimer));
+  });
+
+  // Bind session card events
   container.querySelectorAll(".session-card").forEach((card) => {
     card.addEventListener("click", () => {
       openTerminal(card.dataset.name, card.dataset.machineHost);
     });
 
-    // Long-press to delete
+    // Right-click context menu
+    card.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showSessionContextMenu(e, card.dataset.name, card.dataset.machineHost);
+    });
+
+    // Long-press context menu (replaces old long-press-to-delete)
     let pressTimer;
     card.addEventListener("touchstart", (e) => {
       pressTimer = setTimeout(() => {
         e.preventDefault();
-        confirmDelete(card.dataset.name, card.dataset.machineHost);
+        showSessionContextMenu(e, card.dataset.name, card.dataset.machineHost);
       }, 600);
     });
     card.addEventListener("touchend", () => clearTimeout(pressTimer));
@@ -526,8 +670,12 @@ function patchPaste(term, getWs) {
 // --- Session Navigation ---
 // Navigate to the "next" session using priority ordering: needsInput > working > idle.
 // state.sessions is already sorted by this priority from the server.
+function isAgentSession(s) {
+  return s.agent && s.agent !== "shell";
+}
+
 function navigateNextSession() {
-  const sessions = state.sessions.filter((s) => s.paneId);
+  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
   if (sessions.length === 0) return;
 
   const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
@@ -537,7 +685,7 @@ function navigateNextSession() {
 }
 
 function navigatePrevSession() {
-  const sessions = state.sessions.filter((s) => s.paneId);
+  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
   if (sessions.length === 0) return;
 
   const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
@@ -547,7 +695,7 @@ function navigatePrevSession() {
 }
 
 function updatePositionIndicator() {
-  const sessions = state.sessions.filter((s) => s.paneId);
+  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
   const el = $("#terminal-position");
   if (!el || sessions.length <= 1) {
     if (el) el.textContent = "";
@@ -1204,6 +1352,124 @@ async function loadHibernatedSessions() {
     container.innerHTML = '<div class="empty-state" style="height:100px">Failed to load</div>';
   }
 }
+
+// --- Context Menus ---
+function hideContextMenu() {
+  const menu = $("#context-menu");
+  menu.classList.add("hidden");
+  menu.innerHTML = "";
+}
+
+function positionContextMenu(e) {
+  const menu = $("#context-menu");
+  // Use touch position or mouse position
+  const x = e.touches ? e.touches[0].clientX : e.clientX;
+  const y = e.touches ? e.touches[0].clientY : e.clientY;
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
+  menu.classList.remove("hidden");
+  // Adjust if off-screen
+  const rect = menu.getBoundingClientRect();
+  if (rect.right > window.innerWidth) {
+    menu.style.left = `${window.innerWidth - rect.width - 8}px`;
+  }
+  if (rect.bottom > window.innerHeight) {
+    menu.style.top = `${window.innerHeight - rect.height - 8}px`;
+  }
+}
+
+function showSessionContextMenu(e, sessionName, machineHost) {
+  const menu = $("#context-menu");
+  const sKey = sessionKey(sessionName, machineHost);
+  const groupData = getGroups();
+  const currentGroup = getSessionGroup(sKey);
+  const groupNames = groupData.order.filter((n) => (groupData.groups[n] || []).length > 0 || n === currentGroup);
+
+  const items = [];
+
+  // "Add to group" submenu
+  if (groupNames.length > 0) {
+    for (const gn of groupNames) {
+      if (gn === currentGroup) continue;
+      items.push(`<div class="ctx-item" data-action="move-to-group" data-group="${esc(gn)}">Move to "${esc(gn)}"</div>`);
+    }
+  }
+  items.push(`<div class="ctx-item" data-action="new-group">Add to new group...</div>`);
+
+  if (currentGroup) {
+    items.push(`<div class="ctx-item" data-action="remove-from-group">Remove from "${esc(currentGroup)}"</div>`);
+  }
+
+  items.push(`<div class="ctx-divider"></div>`);
+  items.push(`<div class="ctx-item danger" data-action="kill">Kill session</div>`);
+
+  menu.innerHTML = items.join("");
+  positionContextMenu(e);
+
+  // Bind actions
+  menu.querySelectorAll(".ctx-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const action = item.dataset.action;
+      if (action === "kill") {
+        confirmDelete(sessionName, machineHost);
+      } else if (action === "new-group") {
+        const name = prompt("Group name:");
+        if (name && name.trim()) {
+          addToGroup(name.trim(), sKey);
+          state.renderedSessionsSignature = "";
+          renderSessions();
+        }
+      } else if (action === "move-to-group") {
+        addToGroup(item.dataset.group, sKey);
+        state.renderedSessionsSignature = "";
+        renderSessions();
+      } else if (action === "remove-from-group") {
+        removeFromGroup(sKey);
+        state.renderedSessionsSignature = "";
+        renderSessions();
+      }
+      hideContextMenu();
+    });
+  });
+}
+
+function showGroupContextMenu(e, groupName) {
+  const menu = $("#context-menu");
+  menu.innerHTML = `
+    <div class="ctx-item" data-action="rename">Rename group</div>
+    <div class="ctx-item" data-action="ungroup">Ungroup all</div>
+    <div class="ctx-divider"></div>
+    <div class="ctx-item danger" data-action="delete">Delete group</div>
+  `;
+  positionContextMenu(e);
+
+  menu.querySelectorAll(".ctx-item").forEach((item) => {
+    item.addEventListener("click", () => {
+      const action = item.dataset.action;
+      if (action === "rename") {
+        const newName = prompt("New group name:", groupName);
+        if (newName && newName.trim() && newName.trim() !== groupName) {
+          renameGroup(groupName, newName.trim());
+        }
+      } else if (action === "ungroup") {
+        const data = loadGroups();
+        // Remove all members but keep nothing
+        deleteGroup(groupName);
+      } else if (action === "delete") {
+        deleteGroup(groupName);
+      }
+      hideContextMenu();
+      state.renderedSessionsSignature = "";
+      renderSessions();
+    });
+  });
+}
+
+// Close context menu on outside click
+document.addEventListener("click", (e) => {
+  const menu = $("#context-menu");
+  if (!menu.contains(e.target)) hideContextMenu();
+});
 
 function confirmDelete(sessionName, machineHost = "local") {
   state._deleteTarget = sessionName;
