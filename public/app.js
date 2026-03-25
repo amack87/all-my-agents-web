@@ -243,13 +243,22 @@ async function loadSessions() {
       state.sessionsLastSuccessAt = Date.now();
       state.sessionLoadFailures = 0;
     } catch {
-      // Fallback to local-only
-      const sessions = await api.getSessions();
-      state.sessions = sessions.map((s) => ({ ...s, machine: "local", machineHost: "local" }));
-      state.peerStatus = {};
-      state.hasPeers = false;
-      state.sessionsLastSuccessAt = Date.now();
-      state.sessionLoadFailures = 0;
+      // Mesh fetch failed — refresh local sessions but keep cached remote sessions
+      try {
+        const localSessions = await api.getSessions();
+        const localTagged = localSessions.map((s) => ({ ...s, machine: "local", machineHost: "local" }));
+        if (state.sessionsLastSuccessAt && state.hasPeers) {
+          // Preserve remote sessions from the last successful mesh load
+          const remoteSessions = state.sessions.filter((s) => s.machineHost !== "local");
+          state.sessions = [...localTagged, ...remoteSessions];
+        } else {
+          state.sessions = localTagged;
+          state.peerStatus = {};
+          state.hasPeers = false;
+        }
+      } catch {
+        // Even local fetch failed — keep existing state entirely
+      }
     }
     renderPeerStatus();
     renderSessions();
