@@ -82,6 +82,7 @@ html, body {
 .header-actions {
   display: flex;
   gap: 8px;
+  position: relative;
 }
 
 .icon-btn {
@@ -358,6 +359,36 @@ html, body {
   font-size: 15px;
 }
 
+.empty-state-panel {
+  flex-direction: column;
+  gap: 12px;
+  text-align: center;
+  padding: 24px;
+}
+
+.empty-state-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.btn {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #222;
+  color: var(--text);
+  font-size: 13px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.btn.secondary {
+  color: var(--text-dim);
+}
+
+.btn.danger {
+  color: var(--red);
+}
+
 /* --- Zoom Popup --- */
 .zoom-popup {
   position: fixed;
@@ -417,6 +448,38 @@ html, body {
 
 .zoom-btn-text:active {
   background: #333;
+}
+
+.popover-menu {
+  position: fixed;
+  min-width: 190px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 6px;
+  z-index: 170;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.popover-menu.hidden {
+  display: none;
+}
+
+.popover-item {
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.popover-item:active,
+.popover-item:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 /* --- Terminal View --- */
@@ -791,7 +854,7 @@ html, body {
 }
 
 .xterm-viewport {
-  overflow-y: hidden !important;
+  overflow-y: auto !important;
 }
 
 /* --- Desktop Responsive Layout --- */

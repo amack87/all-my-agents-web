@@ -9,6 +9,12 @@ import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicod
 // are online. If the current host goes down, auto-switches to another.
 const HOSTS_STORAGE_KEY = "allmyagents-known-hosts";
 const ACTIVE_HOST_KEY = "allmyagents-active-host";
+const APP_STORAGE_KEYS = [
+  HOSTS_STORAGE_KEY,
+  ACTIVE_HOST_KEY,
+  "allmyagents-session-groups",
+  "allmyagents-zoom",
+];
 
 // Base URL for all API calls. Empty string = same origin (default).
 let apiBase = "";
@@ -21,6 +27,49 @@ function wsBase() {
   if (!apiBase) return `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}`;
   const url = new URL(apiBase);
   return `${url.protocol === "https:" ? "wss:" : "ws:"}//${url.host}`;
+}
+
+function removeStoredValue(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch { /* ignore */ }
+}
+
+function getStoredJson(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    return JSON.parse(raw);
+  } catch {
+    removeStoredValue(key);
+    return fallback;
+  }
+}
+
+function getStoredString(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    removeStoredValue(key);
+    return null;
+  }
+}
+
+function setStoredValue(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch { /* ignore */ }
+}
+
+function resetAppState() {
+  for (const key of APP_STORAGE_KEYS) removeStoredValue(key);
+  apiBase = "";
+  location.reload();
+}
+
+function confirmAndResetAppState() {
+  const confirmed = confirm("Reset All My Agents app data on this device and reload?");
+  if (confirmed) resetAppState();
 }
 
 /** Probe a host's /api/identity with a timeout. Returns identity or null. */
@@ -41,8 +90,8 @@ async function probeHost(origin, timeoutMs = 2000) {
 
 /** Load known hosts from localStorage. Always includes current origin. */
 function loadKnownHosts() {
-  const saved = localStorage.getItem(HOSTS_STORAGE_KEY);
-  const hosts = saved ? JSON.parse(saved) : [];
+  const saved = getStoredJson(HOSTS_STORAGE_KEY, []);
+  const hosts = Array.isArray(saved) ? saved.filter((h) => typeof h === "string" && h) : [];
   const current = `${location.protocol}//${location.host}`;
   if (!hosts.includes(current)) hosts.unshift(current);
   return [...new Set(hosts)];
@@ -50,7 +99,7 @@ function loadKnownHosts() {
 
 /** Save known hosts to localStorage. */
 function saveKnownHosts(hosts) {
-  localStorage.setItem(HOSTS_STORAGE_KEY, JSON.stringify([...new Set(hosts)]));
+  setStoredValue(HOSTS_STORAGE_KEY, JSON.stringify([...new Set(hosts)]));
 }
 
 /**
@@ -60,7 +109,7 @@ function saveKnownHosts(hosts) {
  */
 async function discoverActiveHost() {
   const known = loadKnownHosts();
-  const lastActive = localStorage.getItem(ACTIVE_HOST_KEY);
+  const lastActive = getStoredString(ACTIVE_HOST_KEY);
 
   // Probe all known hosts in parallel
   const results = await Promise.allSettled(known.map((h) => probeHost(h)));
@@ -83,7 +132,7 @@ async function discoverActiveHost() {
   } else {
     apiBase = preferred.origin;
   }
-  localStorage.setItem(ACTIVE_HOST_KEY, preferred.origin);
+  setStoredValue(ACTIVE_HOST_KEY, preferred.origin);
 
   // Discover new hosts from peers reported by alive hosts
   const allHosts = [...known];
@@ -146,15 +195,18 @@ const state = {
 const GROUPS_STORAGE_KEY = "allmyagents-session-groups";
 
 function loadGroups() {
-  try {
-    const raw = localStorage.getItem(GROUPS_STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
-  return { groups: {}, collapsed: {}, order: [] };
+  const fallback = { groups: {}, collapsed: {}, order: [] };
+  const data = getStoredJson(GROUPS_STORAGE_KEY, fallback);
+  if (!data || typeof data !== "object") return fallback;
+  return {
+    groups: data.groups && typeof data.groups === "object" ? data.groups : {},
+    collapsed: data.collapsed && typeof data.collapsed === "object" ? data.collapsed : {},
+    order: Array.isArray(data.order) ? data.order.filter((n) => typeof n === "string") : [],
+  };
 }
 
 function saveGroups(data) {
-  localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(data));
+  setStoredValue(GROUPS_STORAGE_KEY, JSON.stringify(data));
 }
 
 function getGroups() {
@@ -411,6 +463,19 @@ function renderSessions() {
   state.renderedSessionsSignature = signature;
 
   if (filtered.length === 0) {
+    if (state.sessionLoadFailures >= 2) {
+      container.innerHTML = `
+        <div class="empty-state empty-state-panel">
+          <div>Session list looks stale or unavailable.</div>
+          <div class="empty-state-actions">
+            <button class="btn secondary" data-action="retry-load">Retry</button>
+            <button class="btn danger" data-action="reset-app">Reset App</button>
+          </div>
+        </div>`;
+      container.querySelector('[data-action="retry-load"]')?.addEventListener("click", loadSessions);
+      container.querySelector('[data-action="reset-app"]')?.addEventListener("click", confirmAndResetAppState);
+      return;
+    }
     container.innerHTML = '<div class="empty-state">No tmux sessions found</div>';
     return;
   }
@@ -759,7 +824,7 @@ function openTerminal(sessionName, machineHost = "local") {
     },
     cursorBlink: true,
     allowProposedApi: true,
-    scrollback: 0,
+    scrollback: 5000,
   });
 
   const fitAddon = new FitAddon();
@@ -807,14 +872,6 @@ function openTerminal(sessionName, machineHost = "local") {
   container.innerHTML = "";
   container.style.opacity = "0";
   term.open(container);
-
-  // Block wheel/trackpad scroll — scrollback should use arrow keys or tmux copy mode only.
-  // Use capture phase on both the container and xterm's viewport to intercept before xterm handles it.
-  container.addEventListener("wheel", (e) => { e.preventDefault(); e.stopPropagation(); }, { passive: false, capture: true });
-  const xtermViewport = container.querySelector(".xterm-viewport");
-  if (xtermViewport) {
-    xtermViewport.addEventListener("wheel", (e) => { e.preventDefault(); e.stopPropagation(); }, { passive: false, capture: true });
-  }
 
   // Short delay for DOM to settle before fitting
   requestAnimationFrame(() => {
@@ -1529,7 +1586,6 @@ async function doDelete() {
 
 // --- Event Bindings ---
 $("#back-btn").addEventListener("click", closeTerminal);
-$("#refresh-btn").addEventListener("click", loadSessions);
 $("#add-session-btn").addEventListener("click", showNewSessionModal);
 $("#modal-cancel").addEventListener("click", hideNewSessionModal);
 $("#modal-create").addEventListener("click", createSession);
@@ -1584,10 +1640,11 @@ const ZOOM_STEPS = [0.75, 0.85, 0.9, 1, 1.1, 1.2, 1.35, 1.5];
 const ZOOM_STORAGE_KEY = "allmyagents-zoom";
 
 function getZoomIndex() {
-  const saved = localStorage.getItem(ZOOM_STORAGE_KEY);
+  const saved = getStoredString(ZOOM_STORAGE_KEY);
   if (saved !== null) {
     const idx = ZOOM_STEPS.indexOf(parseFloat(saved));
     if (idx !== -1) return idx;
+    removeStoredValue(ZOOM_STORAGE_KEY);
   }
   return ZOOM_STEPS.indexOf(1);
 }
@@ -1598,7 +1655,7 @@ function applyZoom() {
   const zoom = ZOOM_STEPS[zoomIndex];
   document.documentElement.style.setProperty("--zoom", zoom);
   $("#zoom-level").textContent = `${Math.round(zoom * 100)}%`;
-  localStorage.setItem(ZOOM_STORAGE_KEY, zoom);
+  setStoredValue(ZOOM_STORAGE_KEY, zoom);
 
   // Also scale terminal font size
   const termFontSize = Math.round(14 * zoom);
@@ -1628,7 +1685,27 @@ function zoomReset() {
 }
 
 function toggleZoomPopup() {
+  $("#overflow-menu").classList.add("hidden");
   $("#zoom-popup").classList.toggle("hidden");
+}
+
+function toggleOverflowMenu() {
+  $("#zoom-popup").classList.add("hidden");
+  const menu = $("#overflow-menu");
+  const button = $("#overflow-btn");
+  const willShow = menu.classList.contains("hidden");
+
+  if (willShow) {
+    const rect = button.getBoundingClientRect();
+    menu.classList.remove("hidden");
+    const menuWidth = menu.offsetWidth;
+    const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12));
+    const top = rect.bottom + 8;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  } else {
+    menu.classList.add("hidden");
+  }
 }
 
 // Close zoom popup when tapping elsewhere
@@ -1638,12 +1715,26 @@ document.addEventListener("click", (e) => {
   if (!popup.classList.contains("hidden") && !popup.contains(e.target) && !btn.contains(e.target)) {
     popup.classList.add("hidden");
   }
+
+  const overflow = $("#overflow-menu");
+  const overflowBtn = $("#overflow-btn");
+  if (!overflow.classList.contains("hidden") && !overflow.contains(e.target) && !overflowBtn.contains(e.target)) {
+    overflow.classList.add("hidden");
+  }
 });
 
 $("#zoom-btn").addEventListener("click", toggleZoomPopup);
 $("#zoom-up").addEventListener("click", zoomUp);
 $("#zoom-down").addEventListener("click", zoomDown);
 $("#zoom-reset").addEventListener("click", zoomReset);
+$("#overflow-btn").addEventListener("click", toggleOverflowMenu);
+document.querySelectorAll("#overflow-menu .popover-item").forEach((item) => {
+  item.addEventListener("click", () => {
+    $("#overflow-menu").classList.add("hidden");
+    if (item.dataset.action === "refresh") loadSessions();
+    if (item.dataset.action === "reset-app") confirmAndResetAppState();
+  });
+});
 
 // --- Init ---
 async function init() {

@@ -345,40 +345,82 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
 });
 
 // --- Agent Detection ---
+function detectAgentFromCommand(command) {
+  if (!command) return null;
+  const normalized = command.trim().toLowerCase();
+  if (normalized === "codex") return "Codex";
+  if (normalized === "claude") return "Claude Code";
+  if (normalized === "cursor") return "Cursor";
+  if (normalized === "aider") return "Aider";
+  if (normalized === "copilot") return "Copilot";
+  return null;
+}
+
+function detectAgentFromArgs(args) {
+  if (!args) return null;
+  const normalized = args.trim().toLowerCase();
+  if (normalized.includes("codex")) return "Codex";
+  if (normalized.includes("claude")) return "Claude Code";
+  if (normalized.includes("cursor")) return "Cursor";
+  if (normalized.includes("aider")) return "Aider";
+  if (normalized.includes("copilot")) return "Copilot";
+  return null;
+}
+
+function detectAgentFromContent(content) {
+  if (!content) return null;
+  const normalized = content.toLowerCase();
+
+  if (normalized.includes("openai codex")) return "Codex";
+  if (normalized.includes("anthropic claude")) return "Claude Code";
+  if (normalized.includes("cursor")) return "Cursor";
+  if (normalized.includes("aider")) return "Aider";
+  if (normalized.includes("copilot")) return "Copilot";
+
+  return null;
+}
+
 // Identifies what agent/tool is running in a tmux pane by inspecting
-// the process tree rooted at the pane's shell PID.
-async function detectAgent(panePid) {
-  if (!panePid) return "shell";
+// the pane command, process tree rooted at the pane's shell PID, and
+// finally the captured pane content for TUI-only fingerprints.
+async function detectAgent(panePid, currentCmd, content = "") {
+  const directMatch = detectAgentFromCommand(currentCmd);
+  if (directMatch) return directMatch;
+  if (!panePid) return detectAgentFromContent(content) || "shell";
   try {
-    // Get child processes of the pane's shell
-    const { stdout } = await execFileAsync("pgrep", ["-lP", panePid], { timeout: 2000 });
-    const children = stdout.trim().split("\n").filter(Boolean);
+    const pending = [panePid];
+    const visited = new Set();
 
-    for (const child of children) {
-      const parts = child.trim().split(/\s+/);
-      if (parts.length < 2) continue;
-      const [childPid, childName] = parts;
+    while (pending.length > 0) {
+      const parentPid = pending.shift();
+      if (!parentPid || visited.has(parentPid)) continue;
+      visited.add(parentPid);
 
-      // Direct match on process name
-      if (childName === "claude") return "Claude Code";
-      if (childName === "cursor") return "Cursor";
-      if (childName === "aider") return "Aider";
-      if (childName === "copilot") return "Copilot";
-
-      // Node-based agents: check the args
-      if (childName === "node") {
-        try {
-          const { stdout: args } = await execFileAsync("ps", ["-o", "args=", "-p", childPid], { timeout: 1000 });
-          const argsStr = args.trim().toLowerCase();
-          if (argsStr.includes("codex")) return "Codex";
-          if (argsStr.includes("claude")) return "Claude Code";
-          if (argsStr.includes("cursor")) return "Cursor";
-          if (argsStr.includes("aider")) return "Aider";
-        } catch { /* ignore */ }
+      let children = [];
+      try {
+        const { stdout } = await execFileAsync("pgrep", ["-lP", parentPid], { timeout: 2000 });
+        children = stdout.trim().split("\n").filter(Boolean);
+      } catch {
+        continue;
       }
 
-      // Claude Code shows its version as the process name (e.g. "2.1.77")
-      if (/^\d+\.\d+\.\d+$/.test(childName)) {
+      for (const child of children) {
+        const parts = child.trim().split(/\s+/);
+        if (parts.length < 2) continue;
+        const [childPid, childName] = parts;
+        pending.push(childPid);
+
+        const nameMatch = detectAgentFromCommand(childName);
+        if (nameMatch) return nameMatch;
+
+        try {
+          const { stdout: args } = await execFileAsync("ps", ["-o", "args=", "-p", childPid], { timeout: 1000 });
+          const argsMatch = detectAgentFromArgs(args);
+          if (argsMatch) return argsMatch;
+        } catch { /* ignore */ }
+
+        // Claude Code sometimes shows its version as the process name (e.g. "2.1.77")
+        if (!/^\d+\.\d+\.\d+$/.test(childName)) continue;
         try {
           const { stdout: comm } = await execFileAsync("ps", ["-o", "comm=", "-p", childPid], { timeout: 1000 });
           if (comm.trim() === "claude") return "Claude Code";
@@ -386,9 +428,9 @@ async function detectAgent(panePid) {
       }
     }
 
-    return "shell";
+    return detectAgentFromContent(content) || "shell";
   } catch {
-    return "shell";
+    return detectAgentFromContent(content) || "shell";
   }
 }
 
@@ -425,10 +467,8 @@ async function discoverSessions() {
     let status = "unknown";
     let agent = "shell";
     try {
-      const [content, detectedAgent] = await Promise.all([
-        tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => ""),
-        detectAgent(panePid),
-      ]);
+      const content = await tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => "");
+      const detectedAgent = await detectAgent(panePid, currentCmd, content);
       status = content ? detectStatus(content) : "unknown";
       agent = detectedAgent;
     } catch { /* ignore */ }
