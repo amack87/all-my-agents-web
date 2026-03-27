@@ -4,6 +4,14 @@ import { FitAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+
 import { WebLinksAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/+esm";
 import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/+esm";
 
+// --- Theme Helpers ---
+function getTerminalTheme() {
+  const isLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+  return isLight
+    ? { background: "#1a1a1a", foreground: "#e4e4e4", cursor: "#e4e4e4", selectionBackground: "rgba(79, 70, 229, 0.3)" }
+    : { background: "#000000", foreground: "#e4e4e4", cursor: "#e4e4e4", selectionBackground: "rgba(99, 102, 241, 0.3)" };
+}
+
 // --- Host Discovery & Failover ---
 // On load, probes the current host + all known peers to find which servers
 // are online. If the current host goes down, auto-switches to another.
@@ -636,19 +644,21 @@ function statusLabel(status) {
   return labels[status] || status;
 }
 
-// Returns a CSS color for inactive sessions: blue (#6366f1) fading to dark (#1a1a2e)
-// over 12 hours based on last activity timestamp.
+// Returns a CSS color for inactive sessions: accent fading to muted
+// over 4 hours based on last activity timestamp.
 function activityDotColor(lastActivity) {
-  if (!lastActivity) return "#1a1a2e";
+  const isLight = window.matchMedia("(prefers-color-scheme: light)").matches;
+  const fadeTo = isLight ? [180, 180, 200] : [26, 26, 46];
+  if (!lastActivity) return `rgb(${fadeTo[0]},${fadeTo[1]},${fadeTo[2]})`;
   const nowSec = Math.floor(Date.now() / 1000);
   const ageSec = nowSec - lastActivity;
   const FADE_DURATION = 4 * 60 * 60; // 4 hours in seconds
-  const t = Math.min(ageSec / FADE_DURATION, 1); // 0 = just now, 1 = 12h+ ago
+  const t = Math.min(ageSec / FADE_DURATION, 1); // 0 = just now, 1 = 4h+ ago
 
-  // Lerp from blue (99,102,241) to dark (26,26,46)
-  const r = Math.round(99 + (26 - 99) * t);
-  const g = Math.round(102 + (26 - 102) * t);
-  const b = Math.round(241 + (46 - 241) * t);
+  // Lerp from blue (99,102,241) to faded color
+  const r = Math.round(99 + (fadeTo[0] - 99) * t);
+  const g = Math.round(102 + (fadeTo[1] - 102) * t);
+  const b = Math.round(241 + (fadeTo[2] - 241) * t);
   return `rgb(${r},${g},${b})`;
 }
 
@@ -660,8 +670,8 @@ function activityDotStyle(session) {
 }
 
 // --- Machine Color Palette ---
-// 12 visually distinct, dark-theme-friendly colors for machine badges.
-const MACHINE_COLORS = [
+// 12 visually distinct colors for machine badges, with dark and light variants.
+const MACHINE_COLORS_DARK = [
   { bg: "rgba(99,102,241,0.15)",  fg: "#818cf8" },  // indigo
   { bg: "rgba(52,211,153,0.15)",  fg: "#6ee7b7" },  // emerald
   { bg: "rgba(251,146,60,0.15)",  fg: "#fb923c" },  // orange
@@ -675,22 +685,37 @@ const MACHINE_COLORS = [
   { bg: "rgba(34,211,238,0.15)",  fg: "#22d3ee" },  // cyan
   { bg: "rgba(163,230,53,0.15)",  fg: "#a3e635" },  // lime
 ];
+const MACHINE_COLORS_LIGHT = [
+  { bg: "rgba(79,70,229,0.12)",   fg: "#4338ca" },  // indigo
+  { bg: "rgba(16,185,129,0.12)",  fg: "#047857" },  // emerald
+  { bg: "rgba(234,88,12,0.12)",   fg: "#c2410c" },  // orange
+  { bg: "rgba(126,34,206,0.12)",  fg: "#7e22ce" },  // purple
+  { bg: "rgba(2,132,199,0.12)",   fg: "#0369a1" },  // sky
+  { bg: "rgba(225,29,72,0.12)",   fg: "#be123c" },  // rose
+  { bg: "rgba(161,98,7,0.12)",    fg: "#a16207" },  // yellow
+  { bg: "rgba(13,148,136,0.12)",  fg: "#0d9488" },  // teal
+  { bg: "rgba(194,65,12,0.12)",   fg: "#c2410c" },  // amber
+  { bg: "rgba(126,34,206,0.12)",  fg: "#7c3aed" },  // violet
+  { bg: "rgba(8,145,178,0.12)",   fg: "#0891b2" },  // cyan
+  { bg: "rgba(77,124,15,0.12)",   fg: "#4d7c0f" },  // lime
+];
 
-const machineColorMap = new Map();
+function getMachineColors() {
+  return window.matchMedia("(prefers-color-scheme: light)").matches
+    ? MACHINE_COLORS_LIGHT
+    : MACHINE_COLORS_DARK;
+}
 
 function machineColor(machineName) {
-  if (!machineName) return MACHINE_COLORS[0];
-  if (machineColorMap.has(machineName)) return machineColorMap.get(machineName);
+  const colors = getMachineColors();
+  if (!machineName) return colors[0];
   // Deterministic hash (djb2) so every AMA server assigns the same color
   // to the same machine name, regardless of discovery order.
   let hash = 5381;
   for (let i = 0; i < machineName.length; i++) {
     hash = ((hash * 33) ^ machineName.charCodeAt(i)) >>> 0;
   }
-  const idx = hash % MACHINE_COLORS.length;
-  const color = MACHINE_COLORS[idx];
-  machineColorMap.set(machineName, color);
-  return color;
+  return colors[hash % colors.length];
 }
 
 /** Unique key for a session across machines. */
@@ -816,12 +841,7 @@ function openTerminal(sessionName, machineHost = "local") {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono NF", monospace',
     fontSize: Math.round(14 * termZoom),
-    theme: {
-      background: "#000000",
-      foreground: "#e4e4e4",
-      cursor: "#e4e4e4",
-      selectionBackground: "rgba(99, 102, 241, 0.3)",
-    },
+    theme: getTerminalTheme(),
     cursorBlink: true,
     allowProposedApi: true,
     scrollback: 5000,
@@ -1763,6 +1783,14 @@ async function init() {
 
 init();
 startListPolling();
+
+// Live-update terminal theme and session list when system color scheme changes
+window.matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => {
+  if (state.terminal) {
+    state.terminal.options.theme = getTerminalTheme();
+  }
+  renderSessions(state.sessions);
+});
 
 // Periodic health check — failover if active host goes down
 setInterval(healthCheck, 30_000);

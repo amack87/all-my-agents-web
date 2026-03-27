@@ -16,6 +16,54 @@
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
   --zoom: 1;
+  --surface: #222;
+  --surface-hover: #333;
+  --terminal-bg: #000;
+  --overlay: rgba(0, 0, 0, 0.6);
+  --shadow: rgba(0, 0, 0, 0.4);
+  --shadow-heavy: rgba(0, 0, 0, 0.5);
+  --white-subtle: rgba(255, 255, 255, 0.05);
+  --white-hover: rgba(255, 255, 255, 0.08);
+  --white-active: rgba(255, 255, 255, 0.1);
+  --white-border: rgba(255, 255, 255, 0.12);
+  --group-border: rgba(255, 255, 255, 0.08);
+  --ctx-divider: rgba(255, 255, 255, 0.1);
+  --active-card-bg: rgba(99, 102, 241, 0.08);
+  --scroll-exit-bg: #2a1a1a;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg: #f5f5f5;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f0f0f0;
+    --bg-bar: #fafafa;
+    --border: #d4d4d4;
+    --text: #1a1a1a;
+    --text-dim: #666;
+    --accent: #4f46e5;
+    --accent-dim: #4338ca;
+    --orange: #d97706;
+    --green: #16a34a;
+    --red: #dc2626;
+    --gray: #999;
+    --surface: #e5e5e5;
+    --surface-hover: #d4d4d4;
+    --terminal-bg: #1a1a1a;
+    --overlay: rgba(0, 0, 0, 0.3);
+    --shadow: rgba(0, 0, 0, 0.1);
+    --shadow-heavy: rgba(0, 0, 0, 0.15);
+    --white-subtle: rgba(0, 0, 0, 0.03);
+    --white-hover: rgba(0, 0, 0, 0.06);
+    --white-active: rgba(0, 0, 0, 0.08);
+    --white-border: rgba(0, 0, 0, 0.1);
+    --group-border: rgba(0, 0, 0, 0.08);
+    --ctx-divider: rgba(0, 0, 0, 0.1);
+    --active-card-bg: rgba(79, 70, 229, 0.08);
+    --scroll-exit-bg: #fde8e8;
+    color-scheme: light;
+  }
 }
 
 html {
@@ -99,7 +147,7 @@ html, body {
 }
 
 .icon-btn:active {
-  background: rgba(255,255,255,0.1);
+  background: var(--white-active);
 }
 
 .icon-btn.danger {
@@ -286,7 +334,7 @@ html, body {
 }
 
 .session-group-header:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: var(--white-subtle);
 }
 
 .group-chevron {
@@ -311,7 +359,7 @@ html, body {
 
 .session-group-body {
   padding-left: 4px;
-  border-left: 2px solid rgba(255, 255, 255, 0.08);
+  border-left: 2px solid var(--group-border);
   margin-left: 12px;
 }
 
@@ -321,10 +369,10 @@ html, body {
   z-index: 9999;
   min-width: 180px;
   background: var(--surface);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  border: 1px solid var(--white-border);
   border-radius: 10px;
   padding: 4px 0;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: 0 8px 24px var(--shadow);
   backdrop-filter: blur(12px);
 }
 
@@ -337,7 +385,7 @@ html, body {
 }
 
 .ctx-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--white-hover);
 }
 
 .ctx-item.danger {
@@ -347,7 +395,7 @@ html, body {
 .ctx-divider {
   height: 1px;
   margin: 4px 8px;
-  background: rgba(255, 255, 255, 0.1);
+  background: var(--ctx-divider);
 }
 
 .empty-state {
@@ -374,7 +422,7 @@ html, body {
 .btn {
   border-radius: 10px;
   border: 1px solid var(--border);
-  background: #222;
+  background: var(--surface);
   color: var(--text);
   font-size: 13px;
   padding: 8px 12px;
@@ -402,7 +450,7 @@ html, body {
   border-radius: 10px;
   padding: 8px 12px;
   z-index: 150;
-  box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  box-shadow: 0 4px 20px var(--shadow-heavy);
 }
 
 .zoom-popup.hidden {
@@ -422,7 +470,7 @@ html, body {
   height: 32px;
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: #222;
+  background: var(--surface);
   color: var(--text);
   font-size: 18px;
   font-weight: 600;
@@ -433,13 +481,13 @@ html, body {
 }
 
 .zoom-btn:active {
-  background: #333;
+  background: var(--surface-hover);
 }
 
 .zoom-btn-text {
   border-radius: 8px;
   border: 1px solid var(--border);
-  background: #222;
+  background: var(--surface);
   color: var(--text-dim);
   font-size: 12px;
   padding: 6px 10px;
@@ -447,7 +495,7 @@ html, body {
 }
 
 .zoom-btn-text:active {
-  background: #333;
+  background: var(--surface-hover);
 }
 
 .popover-menu {
@@ -458,7 +506,7 @@ html, body {
   border-radius: 10px;
   padding: 6px;
   z-index: 170;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 8px 24px var(--shadow);
 }
 
 .popover-menu.hidden {
@@ -479,7 +527,7 @@ html, body {
 
 .popover-item:active,
 .popover-item:hover {
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--white-hover);
 }
 
 /* --- Terminal View --- */
@@ -505,7 +553,7 @@ html, body {
 
 #terminal-container {
   flex: 1;
-  background: #000;
+  background: var(--terminal-bg);
   overflow: hidden;
   transition: opacity 0.15s ease-in;
 }
@@ -523,7 +571,7 @@ html, body {
 }
 
 .toolbar-btn {
-  background: #222;
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 8px 14px;
@@ -537,7 +585,7 @@ html, body {
 }
 
 .toolbar-btn:active {
-  background: #333;
+  background: var(--surface-hover);
 }
 
 .toolbar-btn.hidden {
@@ -553,7 +601,7 @@ html, body {
 }
 
 .terminal-toolbar[data-mode="scroll"] .scroll-btn[data-action="exit-scroll"] {
-  background: #2a1a1a;
+  background: var(--scroll-exit-bg);
   border-color: var(--red);
   color: var(--red);
 }
@@ -587,7 +635,7 @@ html, body {
 .modal-backdrop {
   position: absolute;
   inset: 0;
-  background: rgba(0,0,0,0.6);
+  background: var(--overlay);
 }
 
 .modal-content {
@@ -739,12 +787,12 @@ html, body {
 }
 
 .btn.secondary {
-  background: #222;
+  background: var(--surface);
   color: var(--text);
 }
 
 .btn.secondary:active {
-  background: #333;
+  background: var(--surface-hover);
 }
 
 .btn.danger {
@@ -791,7 +839,7 @@ html, body {
 
 /* --- Machine Filter --- */
 .machine-filter {
-  background: #222;
+  background: var(--surface);
   border: 1px solid var(--border);
   color: var(--text);
   padding: 4px 8px;
@@ -845,7 +893,7 @@ html, body {
 /* --- Active Session Card (desktop) --- */
 .session-card.active {
   border-color: var(--accent);
-  background: rgba(99, 102, 241, 0.08);
+  background: var(--active-card-bg);
 }
 
 /* xterm overrides for mobile */
