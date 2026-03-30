@@ -10,6 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const CONFIG_PATH = join(__dirname, "mesh.config.json");
 const CONFIG_CACHE_TTL_MS = 30_000;
 const DISCOVERY_CACHE_TTL_MS = 60_000;
+const PEER_GRACE_PERIOD_MS = 5 * 60_000; // Keep recently-seen peers for 5 minutes
 const DEFAULT_PORT = 3456;
 
 let cachedConfig = null;
@@ -18,6 +19,9 @@ let configCacheTime = 0;
 
 let cachedPeers = null;
 let peersCacheTime = 0;
+
+/** Peers seen recently via successful discovery, keyed by "host:port" */
+const recentlySeenPeers = new Map();
 
 const DEFAULT_CONFIG = { name: os.hostname(), port: DEFAULT_PORT, peers: [] };
 
@@ -105,7 +109,7 @@ export async function discoverTailscalePeers(config) {
   const probeResults = await Promise.allSettled(
     candidates.map(async (candidate) => {
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2000);
+      const timer = setTimeout(() => controller.abort(), 5000);
       try {
         const url = `http://${candidate.ip}:${port}/api/identity`;
         const res = await fetch(url, { signal: controller.signal });
@@ -147,9 +151,36 @@ export async function discoverTailscalePeers(config) {
     }
   }
 
+  // Update recently-seen tracker for all currently-discovered peers
+  for (const p of merged) {
+    const key = `${p.host}:${p.port || DEFAULT_PORT}`;
+    recentlySeenPeers.set(key, { peer: p, lastSeen: now });
+  }
+
+  // Grace period: re-add peers that were recently seen but not in this discovery
+  // (e.g., temporarily unreachable during probe). Evict expired entries.
+  for (const [key, entry] of recentlySeenPeers) {
+    if (now - entry.lastSeen > PEER_GRACE_PERIOD_MS) {
+      recentlySeenPeers.delete(key);
+      continue;
+    }
+    if (!seenHosts.has(entry.peer.host)) {
+      seenHosts.add(entry.peer.host);
+      merged.push(entry.peer);
+    }
+  }
+
   cachedPeers = merged;
   peersCacheTime = now;
   return merged;
+}
+
+/**
+ * Clear the discovery cache so the next resolveConfig() forces a fresh probe.
+ */
+export function clearDiscoveryCache() {
+  cachedPeers = null;
+  peersCacheTime = 0;
 }
 
 /**

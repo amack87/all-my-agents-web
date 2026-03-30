@@ -340,6 +340,9 @@ const api = {
   async getMeshSessions() {
     return fetchJson(apiUrl("/api/mesh/sessions"), {}, { timeoutMs: 6000, retries: 1 });
   },
+  async refreshMesh() {
+    return fetchJson(apiUrl("/api/mesh/refresh"), { method: "POST" }, { timeoutMs: 12000, retries: 0 });
+  },
   async getIdentity() {
     return fetchJson(apiUrl("/api/identity"), {}, { timeoutMs: 4000, retries: 1 });
   },
@@ -370,6 +373,24 @@ function showView(name) {
 }
 
 // --- Session List ---
+/** Force-refresh: clears server-side discovery cache before reloading. */
+async function forceRefreshSessions() {
+  try {
+    const result = await api.refreshMesh();
+    state.sessions = result.sessions || [];
+    state.peerStatus = result.peerStatus || {};
+    state.hasPeers = Object.keys(state.peerStatus).length > 0;
+    state.sessionsLastSuccessAt = Date.now();
+    state.sessionLoadFailures = 0;
+    renderPeerStatus();
+    renderSessions();
+    if (state.activeSession) updatePositionIndicator();
+  } catch {
+    // Fall back to normal load
+    await loadSessions();
+  }
+}
+
 async function loadSessions() {
   if (state.sessionsLoadInFlight) {
     state.sessionsLoadQueued = true;
@@ -1751,7 +1772,7 @@ $("#overflow-btn").addEventListener("click", toggleOverflowMenu);
 document.querySelectorAll("#overflow-menu .popover-item").forEach((item) => {
   item.addEventListener("click", () => {
     $("#overflow-menu").classList.add("hidden");
-    if (item.dataset.action === "refresh") loadSessions();
+    if (item.dataset.action === "refresh") forceRefreshSessions();
     if (item.dataset.action === "reset-app") confirmAndResetAppState();
   });
 });

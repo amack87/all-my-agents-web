@@ -8,7 +8,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { accessSync, createWriteStream, mkdirSync } from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
-import { resolveConfig, fetchAllMeshSessions } from "./mesh.js";
+import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -94,6 +94,8 @@ function validatePeerHost(res, peerHost, config) {
     (p) => `${p.host}:${p.port || PORT}` === peerHost
   );
   if (!allowed) {
+    const known = config.peers.map((p) => `${p.host}:${p.port || PORT}`);
+    log("WARN", "Peer not in mesh config", { requested: peerHost, knownPeers: known });
     res.status(403).json({ error: "Peer not in mesh config" });
     return false;
   }
@@ -641,6 +643,19 @@ app.get("/api/identity", async (_req, res) => {
 // Aggregated sessions from all mesh peers
 app.get("/api/mesh/sessions", async (_req, res) => {
   try {
+    const config = await resolveConfig();
+    const localSessions = await discoverSessions();
+    const result = await fetchAllMeshSessions(localSessions, config);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Force-refresh mesh discovery (clears cache, re-probes all peers)
+app.post("/api/mesh/refresh", async (_req, res) => {
+  try {
+    clearDiscoveryCache();
     const config = await resolveConfig();
     const localSessions = await discoverSessions();
     const result = await fetchAllMeshSessions(localSessions, config);
