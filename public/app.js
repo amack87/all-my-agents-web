@@ -926,6 +926,61 @@ function openTerminal(sessionName, machineHost = "local") {
   // Patch paste (native browser paste event works on HTTP, unlike clipboard API)
   patchPaste(term, () => state.ws);
 
+  // Mobile touch-scroll: translate vertical swipes into tmux copy-mode scrolling.
+  // Automatically enters tmux copy mode on swipe-up, exits on tap.
+  if ("ontouchstart" in window) {
+    let touchStartY = 0;
+    let touchAccum = 0;
+    let inCopyMode = false;
+    let touchMoved = false;
+    const SCROLL_THRESHOLD = 20; // pixels per scroll line
+
+    container.addEventListener("touchstart", (e) => {
+      if (e.touches.length === 1) {
+        touchStartY = e.touches[0].clientY;
+        touchAccum = 0;
+        touchMoved = false;
+      }
+    }, { passive: true });
+
+    container.addEventListener("touchmove", (e) => {
+      if (e.touches.length !== 1) return;
+      const ws = state.ws;
+      if (!ws || ws.readyState !== 1) return;
+
+      const dy = touchStartY - e.touches[0].clientY;
+      touchStartY = e.touches[0].clientY;
+      touchAccum += dy;
+      touchMoved = true;
+
+      // Enter tmux copy mode on first scroll-up gesture
+      if (!inCopyMode && touchAccum > SCROLL_THRESHOLD) {
+        ws.send(JSON.stringify({ type: "input", data: "\x02[" })); // Ctrl-B [
+        inCopyMode = true;
+      }
+
+      if (inCopyMode) {
+        while (Math.abs(touchAccum) >= SCROLL_THRESHOLD) {
+          const arrow = touchAccum > 0 ? "\x1b[A" : "\x1b[B"; // Up / Down
+          ws.send(JSON.stringify({ type: "input", data: arrow }));
+          touchAccum -= Math.sign(touchAccum) * SCROLL_THRESHOLD;
+        }
+        e.preventDefault();
+      }
+    }, { passive: false });
+
+    container.addEventListener("touchend", () => {
+      // Exit copy mode on tap (no movement)
+      if (inCopyMode && !touchMoved) {
+        const ws = state.ws;
+        if (ws?.readyState === 1) {
+          ws.send(JSON.stringify({ type: "input", data: "q" })); // quit copy mode
+        }
+        inCopyMode = false;
+      }
+    }, { passive: true });
+  }
+
   // Handle resize
   const resizeHandler = () => {
     fitAddon.fit();
