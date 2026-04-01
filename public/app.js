@@ -126,8 +126,9 @@ async function discoverActiveHost() {
     .filter(Boolean);
 
   if (alive.length === 0) {
-    // No hosts reachable — stay on current origin
+    // No hosts reachable — stay on current origin, clear stale active host
     apiBase = "";
+    removeStoredValue(ACTIVE_HOST_KEY);
     return;
   }
 
@@ -142,15 +143,15 @@ async function discoverActiveHost() {
   }
   setStoredValue(ACTIVE_HOST_KEY, preferred.origin);
 
-  // Discover new hosts from peers reported by alive hosts
-  const allHosts = [...known];
+  // Rebuild host list from ONLY alive hosts + their reported peers (prune dead hosts)
+  const aliveOrigins = new Set(alive.map((h) => h.origin));
+  aliveOrigins.add(current); // always keep current origin
   for (const host of alive) {
     for (const peer of host.peers) {
-      const peerOrigin = `http://${peer.host}:${peer.port || 3456}`;
-      if (!allHosts.includes(peerOrigin)) allHosts.push(peerOrigin);
+      aliveOrigins.add(`http://${peer.host}:${peer.port || 3456}`);
     }
   }
-  saveKnownHosts(allHosts);
+  saveKnownHosts([...aliveOrigins]);
 
   return preferred;
 }
@@ -407,15 +408,17 @@ async function loadSessions() {
       state.sessionsLastSuccessAt = Date.now();
       state.sessionLoadFailures = 0;
     } catch {
-      // Mesh fetch failed — refresh local sessions but keep cached remote sessions
+      // Mesh fetch failed — refresh local sessions but keep cached remote sessions briefly
       try {
         const localSessions = await api.getSessions();
         const localTagged = localSessions.map((s) => ({ ...s, machine: "local", machineHost: "local" }));
-        if (state.sessionsLastSuccessAt && state.hasPeers) {
-          // Preserve remote sessions from the last successful mesh load
+        const meshStalenessMs = Date.now() - (state.sessionsLastSuccessAt || 0);
+        if (state.sessionsLastSuccessAt && state.hasPeers && meshStalenessMs < 60_000) {
+          // Preserve remote sessions from last successful mesh load (max 60s)
           const remoteSessions = state.sessions.filter((s) => s.machineHost !== "local");
           state.sessions = [...localTagged, ...remoteSessions];
         } else {
+          // Remote sessions too stale or never loaded — drop them
           state.sessions = localTagged;
           state.peerStatus = {};
           state.hasPeers = false;
@@ -519,6 +522,7 @@ function renderSessions() {
     if (!sessionsByName.has(s.name)) sessionsByName.set(s.name, s);
   }
   const groupedKeys = new Set();
+  let needsGroupSave = false;
   const html = [];
 
   // Render groups in order
@@ -538,13 +542,13 @@ function renderSessions() {
         }
       }
     }
-    if (resolvedSessions.length === 0) continue;
     // Self-heal: update stored keys if they changed (e.g. machineHost changed)
     const resolvedKeys = resolvedSessions.map(({ key }) => key);
-    if (JSON.stringify(resolvedKeys) !== JSON.stringify(storedKeys)) {
+    if (resolvedKeys.length !== storedKeys.length || JSON.stringify(resolvedKeys) !== JSON.stringify(storedKeys)) {
       groupData.groups[groupName] = resolvedKeys;
-      saveGroups(groupData);
+      needsGroupSave = true;
     }
+    if (resolvedSessions.length === 0) continue;
     resolvedSessions.forEach(({ key }) => groupedKeys.add(key));
 
     const isCollapsed = groupData.collapsed[groupName] || false;
@@ -560,6 +564,9 @@ function renderSessions() {
         </div>`}
       </div>`);
   }
+
+  // Persist self-healed group data (stale keys pruned, machineHost corrections)
+  if (needsGroupSave) saveGroups(groupData);
 
   // Render ungrouped sessions
   const ungrouped = filtered.filter((s) => !groupedKeys.has(sessionKey(s.name, s.machineHost)));
