@@ -198,6 +198,7 @@ const state = {
   terminalReconnectTimer: null,
   terminalReconnectAttempts: 0,
   renderedSessionsSignature: "",
+  inCopyMode: false,
 };
 
 // --- Session Groups (localStorage-backed) ---
@@ -933,40 +934,40 @@ function openTerminal(sessionName, machineHost = "local") {
   // Patch paste (native browser paste event works on HTTP, unlike clipboard API)
   patchPaste(term, () => state.ws);
 
-  // Mobile touch-scroll: translate vertical swipes into tmux copy-mode scrolling.
-  // Automatically enters tmux copy mode on swipe-up, exits on tap.
+  // Mobile touch-scroll: 2-finger vertical swipe scrolls via tmux copy-mode.
+  // 1-finger touch passes through to the terminal for normal interaction.
   if ("ontouchstart" in window) {
     let touchStartY = 0;
     let touchAccum = 0;
-    let inCopyMode = false;
-    let touchMoved = false;
+    let twoFingerMoved = false;
     const SCROLL_THRESHOLD = 20; // pixels per scroll line
 
     container.addEventListener("touchstart", (e) => {
-      if (e.touches.length === 1) {
-        touchStartY = e.touches[0].clientY;
+      if (e.touches.length === 2) {
+        touchStartY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
         touchAccum = 0;
-        touchMoved = false;
+        twoFingerMoved = false;
       }
     }, { passive: true });
 
     container.addEventListener("touchmove", (e) => {
-      if (e.touches.length !== 1) return;
+      if (e.touches.length !== 2) return;
       const ws = state.ws;
       if (!ws || ws.readyState !== 1) return;
 
-      const dy = touchStartY - e.touches[0].clientY;
-      touchStartY = e.touches[0].clientY;
+      const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const dy = touchStartY - midY;
+      touchStartY = midY;
       touchAccum += dy;
-      touchMoved = true;
+      twoFingerMoved = true;
 
       // Enter tmux copy mode on first scroll-up gesture
-      if (!inCopyMode && touchAccum > SCROLL_THRESHOLD) {
+      if (!state.inCopyMode && touchAccum > SCROLL_THRESHOLD) {
         ws.send(JSON.stringify({ type: "input", data: "\x02[" })); // Ctrl-B [
-        inCopyMode = true;
+        state.inCopyMode = true;
       }
 
-      if (inCopyMode) {
+      if (state.inCopyMode) {
         while (Math.abs(touchAccum) >= SCROLL_THRESHOLD) {
           const arrow = touchAccum > 0 ? "\x1b[A" : "\x1b[B"; // Up / Down
           ws.send(JSON.stringify({ type: "input", data: arrow }));
@@ -976,14 +977,14 @@ function openTerminal(sessionName, machineHost = "local") {
       }
     }, { passive: false });
 
-    container.addEventListener("touchend", () => {
-      // Exit copy mode on tap (no movement)
-      if (inCopyMode && !touchMoved) {
+    container.addEventListener("touchend", (e) => {
+      // Exit copy mode on 2-finger tap (no movement)
+      if (state.inCopyMode && !twoFingerMoved && e.touches.length === 0) {
         const ws = state.ws;
         if (ws?.readyState === 1) {
           ws.send(JSON.stringify({ type: "input", data: "q" })); // quit copy mode
         }
-        inCopyMode = false;
+        state.inCopyMode = false;
       }
     }, { passive: true });
   }
@@ -1159,6 +1160,11 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
   // Send terminal input to server
   term.onData((data) => {
     if (ws.readyState === 1) {
+      // Auto-exit tmux copy mode when user types
+      if (state.inCopyMode) {
+        ws.send(JSON.stringify({ type: "input", data: "q" })); // quit copy mode
+        state.inCopyMode = false;
+      }
       onUserInput(data);
       ws.send(JSON.stringify({ type: "input", data }));
     }
