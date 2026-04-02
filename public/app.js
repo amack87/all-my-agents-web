@@ -956,7 +956,7 @@ function openTerminal(sessionName, machineHost = "local") {
       if (!ws || ws.readyState !== 1) return;
 
       const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const dy = touchStartY - midY;
+      const dy = midY - touchStartY;
       touchStartY = midY;
       touchAccum += dy;
       twoFingerMoved = true;
