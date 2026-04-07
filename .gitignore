@@ -1,2 +1,4 @@
 node_modules/
 mesh.config.json
+/logs
+/sandbox

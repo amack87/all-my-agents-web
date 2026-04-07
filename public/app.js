@@ -1165,6 +1165,16 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
         ws.send(JSON.stringify({ type: "input", data: "q" })); // quit copy mode
         state.inCopyMode = false;
       }
+      // Apply sticky Ctrl modifier: convert printable ASCII letter to Ctrl+letter
+      if (state.ctrlActive && data.length === 1) {
+        const code = data.toLowerCase().charCodeAt(0);
+        if (code >= 0x61 && code <= 0x7a) {
+          // a-z → Ctrl+A through Ctrl+Z (0x01-0x1a)
+          data = String.fromCharCode(code - 0x60);
+        }
+        state.ctrlActive = false;
+        document.getElementById("ctrl-mod-btn")?.classList.remove("ctrl-active");
+      }
       onUserInput(data);
       ws.send(JSON.stringify({ type: "input", data }));
     }
@@ -1247,7 +1257,12 @@ function setupToolbar(selector, term) {
       const action = newBtn.dataset.action;
       const ws = state.ws;
 
-      if (action === "next-session") {
+      if (action === "ctrl-mod") {
+        state.ctrlActive = !state.ctrlActive;
+        document.getElementById("ctrl-mod-btn")?.classList.toggle("ctrl-active", state.ctrlActive);
+        term.focus();
+        return;
+      } else if (action === "next-session") {
         navigateNextSession();
         return;
       } else if (action === "paste") {

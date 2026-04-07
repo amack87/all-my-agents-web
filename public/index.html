@@ -93,23 +93,32 @@
       </header>
       <div id="terminal-container"></div>
       <div id="terminal-toolbar" class="terminal-toolbar" data-mode="normal">
-        <button class="toolbar-btn normal-btn" data-action="paste">Paste</button>
-        <button class="toolbar-btn normal-btn" data-key="Escape">Esc</button>
-        <button class="toolbar-btn normal-btn" data-action="next-session">Next</button>
-        <button class="toolbar-btn normal-btn" data-action="enter-scroll">Scroll</button>
-        <button class="toolbar-btn normal-btn" data-send="\x01">^A</button>
-        <button class="toolbar-btn normal-btn" data-send="\x03">^C</button>
-        <button class="toolbar-btn normal-btn" data-send="\x04">^D</button>
-        <button class="toolbar-btn normal-btn" data-send="\x0c">^L</button>
-        <button class="toolbar-btn normal-btn" data-key="ArrowUp">&uarr;</button>
-        <button class="toolbar-btn normal-btn" data-key="ArrowDown">&darr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-action="exit-scroll">Exit Scroll</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="ArrowUp">&uarr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="ArrowDown">&darr;</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="PageUp">PgUp</button>
-        <button class="toolbar-btn scroll-btn hidden" data-key="PageDown">PgDn</button>
-        <button class="toolbar-btn scroll-btn hidden" data-send="\x02[0">Top</button>
-        <button class="toolbar-btn scroll-btn hidden" data-send="\x02[G">Bottom</button>
+        <div class="toolbar-row normal-btn">
+          <button class="toolbar-btn" data-action="paste">Paste</button>
+          <button class="toolbar-btn" data-key="Tab">Tab</button>
+          <button class="toolbar-btn" data-key="Escape">Esc</button>
+          <button class="toolbar-btn" data-key="ArrowUp">&uarr;</button>
+          <button class="toolbar-btn" data-key="ArrowDown">&darr;</button>
+          <button class="toolbar-btn" data-action="next-session">Next</button>
+        </div>
+        <div class="toolbar-row normal-btn">
+          <button class="toolbar-btn" data-send="\x03">Cancel</button>
+          <button class="toolbar-btn" data-send="\x04">EOF</button>
+          <button class="toolbar-btn" data-send="\x01">Tmux</button>
+          <button class="toolbar-btn" data-action="ctrl-mod" id="ctrl-mod-btn">Ctrl</button>
+          <button class="toolbar-btn" data-action="enter-scroll">Scroll</button>
+        </div>
+        <div class="toolbar-row scroll-btn hidden">
+          <button class="toolbar-btn" data-action="exit-scroll">Exit Scroll</button>
+          <button class="toolbar-btn" data-key="ArrowUp">&uarr;</button>
+          <button class="toolbar-btn" data-key="ArrowDown">&darr;</button>
+        </div>
+        <div class="toolbar-row scroll-btn hidden">
+          <button class="toolbar-btn" data-key="PageUp">PgUp</button>
+          <button class="toolbar-btn" data-key="PageDown">PgDn</button>
+          <button class="toolbar-btn" data-send="\x02[0">Top</button>
+          <button class="toolbar-btn" data-send="\x02[G">Bottom</button>
+        </div>
       </div>
     </div>
 
