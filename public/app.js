@@ -69,16 +69,39 @@ function setStoredValue(key, value) {
   } catch { /* ignore */ }
 }
 
+const RESUME_AFTER_RESET_KEY = "allmyagents-resume-after-reset";
+
 function resetAppState() {
+  // Remember active session (if any) so we can reopen it after reload.
+  // Uses sessionStorage so it naturally survives reload but not tab close,
+  // and is separate from APP_STORAGE_KEYS (which we're about to clear).
+  if (state.activeSession) {
+    try {
+      sessionStorage.setItem(RESUME_AFTER_RESET_KEY, JSON.stringify({
+        name: state.activeSession,
+        machineHost: state.activeSessionMeta?.machineHost || "local",
+      }));
+    } catch { /* ignore */ }
+  }
   for (const key of APP_STORAGE_KEYS) removeStoredValue(key);
   apiBase = "";
   location.reload();
 }
 
-function confirmAndResetAppState() {
-  const confirmed = confirm("Reset All My Agents app data on this device and reload?");
-  if (confirmed) resetAppState();
+function consumeResumeAfterReset() {
+  let target = null;
+  try {
+    const raw = sessionStorage.getItem(RESUME_AFTER_RESET_KEY);
+    sessionStorage.removeItem(RESUME_AFTER_RESET_KEY);
+    if (raw) target = JSON.parse(raw);
+  } catch { /* ignore */ }
+  if (!target?.name) return;
+  const match = state.sessions.find((s) =>
+    s.name === target.name && (s.machineHost || "local") === (target.machineHost || "local")
+  );
+  if (match) openTerminal(match.name, match.machineHost);
 }
+
 
 /** Probe a host's /api/identity with a timeout. Returns identity or null. */
 async function probeHost(origin, timeoutMs = 2000) {
@@ -375,23 +398,6 @@ function showView(name) {
 }
 
 // --- Session List ---
-/** Force-refresh: clears server-side discovery cache before reloading. */
-async function forceRefreshSessions() {
-  try {
-    const result = await api.refreshMesh();
-    state.sessions = result.sessions || [];
-    state.peerStatus = result.peerStatus || {};
-    state.hasPeers = Object.keys(state.peerStatus).length > 0;
-    state.sessionsLastSuccessAt = Date.now();
-    state.sessionLoadFailures = 0;
-    renderPeerStatus();
-    renderSessions();
-    if (state.activeSession) updatePositionIndicator();
-  } catch {
-    // Fall back to normal load
-    await loadSessions();
-  }
-}
 
 async function loadSessions() {
   if (state.sessionsLoadInFlight) {
@@ -506,7 +512,7 @@ function renderSessions() {
           </div>
         </div>`;
       container.querySelector('[data-action="retry-load"]')?.addEventListener("click", loadSessions);
-      container.querySelector('[data-action="reset-app"]')?.addEventListener("click", confirmAndResetAppState);
+      container.querySelector('[data-action="reset-app"]')?.addEventListener("click", resetAppState);
       return;
     }
     container.innerHTML = '<div class="empty-state">No tmux sessions found</div>';
@@ -1805,27 +1811,7 @@ function zoomReset() {
 }
 
 function toggleZoomPopup() {
-  $("#overflow-menu").classList.add("hidden");
   $("#zoom-popup").classList.toggle("hidden");
-}
-
-function toggleOverflowMenu() {
-  $("#zoom-popup").classList.add("hidden");
-  const menu = $("#overflow-menu");
-  const button = $("#overflow-btn");
-  const willShow = menu.classList.contains("hidden");
-
-  if (willShow) {
-    const rect = button.getBoundingClientRect();
-    menu.classList.remove("hidden");
-    const menuWidth = menu.offsetWidth;
-    const left = Math.max(12, Math.min(rect.right - menuWidth, window.innerWidth - menuWidth - 12));
-    const top = rect.bottom + 8;
-    menu.style.left = `${left}px`;
-    menu.style.top = `${top}px`;
-  } else {
-    menu.classList.add("hidden");
-  }
 }
 
 // Close zoom popup when tapping elsewhere
@@ -1835,26 +1821,13 @@ document.addEventListener("click", (e) => {
   if (!popup.classList.contains("hidden") && !popup.contains(e.target) && !btn.contains(e.target)) {
     popup.classList.add("hidden");
   }
-
-  const overflow = $("#overflow-menu");
-  const overflowBtn = $("#overflow-btn");
-  if (!overflow.classList.contains("hidden") && !overflow.contains(e.target) && !overflowBtn.contains(e.target)) {
-    overflow.classList.add("hidden");
-  }
 });
 
 $("#zoom-btn").addEventListener("click", toggleZoomPopup);
 $("#zoom-up").addEventListener("click", zoomUp);
 $("#zoom-down").addEventListener("click", zoomDown);
 $("#zoom-reset").addEventListener("click", zoomReset);
-$("#overflow-btn").addEventListener("click", toggleOverflowMenu);
-document.querySelectorAll("#overflow-menu .popover-item").forEach((item) => {
-  item.addEventListener("click", () => {
-    $("#overflow-menu").classList.add("hidden");
-    if (item.dataset.action === "refresh") forceRefreshSessions();
-    if (item.dataset.action === "reset-app") confirmAndResetAppState();
-  });
-});
+$("#reset-btn").addEventListener("click", resetAppState);
 
 // --- Init ---
 async function init() {
@@ -1879,6 +1852,8 @@ async function init() {
     showView("sessionList");
     $("#terminal-container").innerHTML = '<div class="empty-state">Select a session</div>';
   }
+
+  consumeResumeAfterReset();
 }
 
 init();

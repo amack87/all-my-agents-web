@@ -498,38 +498,6 @@ html, body {
   background: var(--surface-hover);
 }
 
-.popover-menu {
-  position: fixed;
-  min-width: 190px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 6px;
-  z-index: 170;
-  box-shadow: 0 8px 24px var(--shadow);
-}
-
-.popover-menu.hidden {
-  display: none;
-}
-
-.popover-item {
-  width: 100%;
-  text-align: left;
-  border: 0;
-  background: transparent;
-  color: var(--text);
-  border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 14px;
-  cursor: pointer;
-}
-
-.popover-item:active,
-.popover-item:hover {
-  background: var(--white-hover);
-}
-
 /* --- Terminal View --- */
 .terminal-bar {
   gap: 12px;
