@@ -940,13 +940,49 @@ function openTerminal(sessionName, machineHost = "local") {
   // Patch paste (native browser paste event works on HTTP, unlike clipboard API)
   patchPaste(term, () => state.ws);
 
-  // Mobile touch-scroll: 2-finger vertical swipe scrolls via tmux copy-mode.
+  // Scroll routing:
+  //   - Main screen buffer (Claude, shell): enter tmux copy-mode and send arrow keys.
+  //   - Alternate screen buffer (opencode and other full-screen TUIs): tmux has no
+  //     scrollback to show, so instead forward SGR mouse-wheel events (DECSET 1006)
+  //     directly to the inner app, which manages its own history.
+  const isAltScreen = () => term.buffer.active.type === "alternate";
+
+  const cellAt = (clientX, clientY) => {
+    const rect = container.getBoundingClientRect();
+    const cellW = Math.max(1, rect.width / term.cols);
+    const cellH = Math.max(1, rect.height / term.rows);
+    const col = Math.min(term.cols, Math.max(1, Math.floor((clientX - rect.left) / cellW) + 1));
+    const row = Math.min(term.rows, Math.max(1, Math.floor((clientY - rect.top) / cellH) + 1));
+    return { col, row };
+  };
+
+  const sendWheel = (direction, clientX, clientY) => {
+    const ws = state.ws;
+    if (!ws || ws.readyState !== 1) return;
+    const { col, row } = cellAt(clientX, clientY);
+    const button = direction === "up" ? 64 : 65; // SGR wheel up / down
+    ws.send(JSON.stringify({ type: "input", data: `\x1b[<${button};${col};${row}M` }));
+  };
+
+  // Desktop: forward wheel events to the inner app when on alt-screen.
+  // When on main screen, let xterm.js handle wheel as scrollback (default).
+  container.addEventListener("wheel", (e) => {
+    if (!isAltScreen()) return;
+    if (e.deltaY === 0) return;
+    const direction = e.deltaY < 0 ? "up" : "down";
+    const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / 40));
+    for (let i = 0; i < notches; i++) sendWheel(direction, e.clientX, e.clientY);
+    e.preventDefault();
+    e.stopPropagation();
+  }, { passive: false, capture: true });
+
+  // Mobile: 2-finger vertical swipe.
   // 1-finger touch passes through to the terminal for normal interaction.
   if ("ontouchstart" in window) {
     let touchStartY = 0;
     let touchAccum = 0;
     let twoFingerMoved = false;
-    const SCROLL_THRESHOLD = 20; // pixels per scroll line
+    const SCROLL_THRESHOLD = 20; // pixels per scroll step
 
     container.addEventListener("touchstart", (e) => {
       if (e.touches.length === 2) {
@@ -967,7 +1003,19 @@ function openTerminal(sessionName, machineHost = "local") {
       touchAccum += dy;
       twoFingerMoved = true;
 
-      // Enter tmux copy mode on first scroll-up gesture
+      // Alt-screen TUIs: forward as wheel events; no tmux copy-mode.
+      if (isAltScreen()) {
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        while (Math.abs(touchAccum) >= SCROLL_THRESHOLD) {
+          const direction = touchAccum > 0 ? "up" : "down";
+          sendWheel(direction, midX, midY);
+          touchAccum -= Math.sign(touchAccum) * SCROLL_THRESHOLD;
+        }
+        e.preventDefault();
+        return;
+      }
+
+      // Main screen: enter tmux copy mode on first scroll-up gesture
       if (!state.inCopyMode && touchAccum > SCROLL_THRESHOLD) {
         ws.send(JSON.stringify({ type: "input", data: "\x02[" })); // Ctrl-B [
         state.inCopyMode = true;
@@ -984,7 +1032,7 @@ function openTerminal(sessionName, machineHost = "local") {
     }, { passive: false });
 
     container.addEventListener("touchend", (e) => {
-      // Exit copy mode on 2-finger tap (no movement)
+      // Exit copy mode on 2-finger tap (no movement). Only relevant on main screen.
       if (state.inCopyMode && !twoFingerMoved && e.touches.length === 0) {
         const ws = state.ws;
         if (ws?.readyState === 1) {

@@ -350,6 +350,7 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
 function detectAgentFromCommand(command) {
   if (!command) return null;
   const normalized = command.trim().toLowerCase();
+  if (normalized === "opencode") return "opencode";
   if (normalized === "codex") return "Codex";
   if (normalized === "claude") return "Claude Code";
   if (normalized === "cursor") return "Cursor";
@@ -361,6 +362,9 @@ function detectAgentFromCommand(command) {
 function detectAgentFromArgs(args) {
   if (!args) return null;
   const normalized = args.trim().toLowerCase();
+  // opencode must come before claude: `opencode --model claude-...` would
+  // otherwise match the claude substring check.
+  if (normalized.includes("opencode")) return "opencode";
   if (normalized.includes("codex")) return "Codex";
   if (normalized.includes("claude")) return "Claude Code";
   if (normalized.includes("cursor")) return "Cursor";
@@ -373,6 +377,9 @@ function detectAgentFromContent(content) {
   if (!content) return null;
   const normalized = content.toLowerCase();
 
+  // Check opencode before claude: opencode's UI shows the Anthropic provider
+  // and model name when using Claude models, which would otherwise win.
+  if (normalized.includes("opencode")) return "opencode";
   if (normalized.includes("openai codex")) return "Codex";
   if (normalized.includes("anthropic claude")) return "Claude Code";
   if (normalized.includes("cursor")) return "Cursor";
