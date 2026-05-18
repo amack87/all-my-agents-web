@@ -1189,6 +1189,13 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
       } else if (msg.type === "exit") {
         if (!settled) flush();
         term.write("\r\n[Session ended]\r\n");
+      } else if (msg.type === "error") {
+        if (!settled) flush();
+        term.write(`\r\n\x1b[31mError:\x1b[m ${msg.message}\r\n`);
+        if (msg.message && msg.message.includes("spawn EBADF")) {
+          term.write("\r\n\x1b[33mPTY allocation failed — the server may need a restart.\x1b[m\r\n");
+          term.write("\x1b[33mClose this session, then use Add Session → New → the server will self-heal.\x1b[m\r\n");
+        }
       }
     } catch {
       writeBuffered(evt.data);
@@ -1515,6 +1522,13 @@ async function createSession() {
   }
 
   if (result.error) {
+    if (result.error.includes("spawn EBADF")) {
+      alert(`Session creation failed: PTY allocation error (EBADF).\n\nThis usually means node-pty's kernel interface is in a bad state.\nClosing this dialog will trigger a server restart — please wait a few seconds, then reload the page.`);
+      try {
+        await fetch(apiUrl("/api/health/restart"), { method: "POST" });
+      } catch {}
+      return;
+    }
     alert(result.error);
     return;
   }

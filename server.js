@@ -72,6 +72,46 @@ async function tmux(...args) {
   return stdout.trim();
 }
 
+// --- Self-Healing ---
+// Tracks spawn/PTY errors. If too many in a sliding window, exits the process
+// so launchd (with KeepAlive) restarts cleanly.
+let spawnErrorWindow = [];
+
+function recordSpawnError(err) {
+  const now = Date.now();
+  const WINDOW_MS = 120_000;
+  const MAX_ERRORS = 5;
+
+  while (spawnErrorWindow.length > 0 && spawnErrorWindow[0] < now - WINDOW_MS) {
+    spawnErrorWindow.shift();
+  }
+  spawnErrorWindow.push(now);
+
+  log("ERROR", "Spawn error recorded", {
+    count: spawnErrorWindow.length, max: MAX_ERRORS, windowSec: WINDOW_MS / 1000, error: err.message,
+  });
+
+  if (spawnErrorWindow.length >= MAX_ERRORS) {
+    log("FATAL", `${MAX_ERRORS} spawn errors in ${WINDOW_MS / 1000}s — exiting for launchd restart`);
+    process.exit(1);
+  }
+}
+
+async function checkPtyHealth() {
+  try {
+    const p = pty.spawn("/bin/echo", ["health"], { cols: 80, rows: 24, name: "xterm-256color" });
+    return await new Promise((resolve) => {
+      const timer = setTimeout(() => { try { p.kill(); } catch {} resolve(false); }, 3000);
+      p.onData((data) => {
+        clearTimeout(timer);
+        try { p.kill(); } catch {}
+        resolve(data.trim() === "health");
+      });
+      p.onExit(() => { clearTimeout(timer); resolve(false); });
+    });
+  } catch { return false; }
+}
+
 // --- Validation ---
 // Allows session names, pane IDs (%123), and tmux target syntax (session:window.pane)
 const TMUX_TARGET_RE = /^[a-zA-Z0-9_.%:-]+$/;
@@ -124,6 +164,7 @@ app.post("/api/sessions", async (req, res) => {
     await tmux("new-session", "-d", "-s", name);
     res.json({ ok: true, name });
   } catch (err) {
+    recordSpawnError(err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -269,6 +310,7 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
       });
     } catch (err) {
       log("ERROR", "Terminal spawn error", { target, error: err.message });
+      recordSpawnError(err);
       if (ws.readyState === 1) {
         ws.send(JSON.stringify({ type: "error", message: err.message }));
         ws.close();
@@ -809,6 +851,29 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
       remoteWs.close();
     }
   });
+});
+
+// --- Health & Self-Healing ---
+
+app.get("/api/health", async (_req, res) => {
+  const ptyOk = await checkPtyHealth();
+  let tmuxOk = false;
+  try { await tmux("list-sessions"); tmuxOk = true; } catch {}
+
+  res.json({
+    status: ptyOk && tmuxOk ? "ok" : "degraded",
+    ptyAllocation: ptyOk,
+    tmuxAccess: tmuxOk,
+    spawnErrors: spawnErrorWindow.length,
+    uptimeMs: process.uptime() * 1000,
+    pid: process.pid,
+  });
+});
+
+app.post("/api/health/restart", (_req, res) => {
+  res.json({ ok: true, message: "Restarting..." });
+  log("INFO", "Restart requested via /api/health/restart");
+  setTimeout(() => process.exit(0), 100);
 });
 
 // --- Start ---
