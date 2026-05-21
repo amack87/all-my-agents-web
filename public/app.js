@@ -72,9 +72,7 @@ function setStoredValue(key, value) {
 const RESUME_AFTER_RESET_KEY = "allmyagents-resume-after-reset";
 
 function resetAppState() {
-  // Remember active session (if any) so we can reopen it after reload.
-  // Uses sessionStorage so it naturally survives reload but not tab close,
-  // and is separate from APP_STORAGE_KEYS (which we're about to clear).
+  // Remember active session so we can reopen it after reset
   if (state.activeSession) {
     try {
       sessionStorage.setItem(RESUME_AFTER_RESET_KEY, JSON.stringify({
@@ -85,7 +83,14 @@ function resetAppState() {
   }
   for (const key of APP_STORAGE_KEYS) removeStoredValue(key);
   apiBase = "";
-  location.reload();
+  // Async reset without full page reload
+  state.activeSession = null;
+  state.activeSessionMeta = null;
+  state.sessions = [];
+  closeTerminal();
+  loadSessions().then(() => {
+    consumeResumeAfterReset();
+  });
 }
 
 function consumeResumeAfterReset() {
@@ -330,6 +335,14 @@ async function fetchJson(url, options = {}, { timeoutMs = 5000, retries = 0 } = 
   for (;;) {
     try {
       const res = await fetchWithTimeout(url, options, timeoutMs);
+      const ct = (res.headers.get("content-type") || "").toLowerCase();
+      if (!ct.includes("application/json") && !ct.includes("text/json")) {
+        const text = await res.text().catch(() => "");
+        throw new Error(
+          `Server returned ${res.status} ${res.statusText} (${ct || "no content-type"})` +
+          (text ? `: ${text.slice(0, 200)}` : "")
+        );
+      }
       return await res.json();
     } catch (err) {
       if (attempt >= retries) throw err;
@@ -355,6 +368,12 @@ const api = {
       ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}`)
       : apiUrl(`/api/sessions/${encodeURIComponent(name)}`);
     return fetchJson(url, { method: "DELETE" }, { timeoutMs: 7000 });
+  },
+  async hibernateSession(name, machineHost) {
+    const url = machineHost && machineHost !== "local"
+      ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}/hibernate`)
+      : apiUrl(`/api/sessions/${encodeURIComponent(name)}/hibernate`);
+    return fetchJson(url, { method: "POST" }, { timeoutMs: 15000 });
   },
   async capturePane(target, machineHost) {
     const url = machineHost && machineHost !== "local"
@@ -858,6 +877,15 @@ function updatePositionIndicator() {
 function openTerminal(sessionName, machineHost = "local") {
   state.activeSession = sessionName;
   state.activeSessionMeta = { machineHost };
+
+  // Update URL hash for direct-linking
+  const hashTarget = machineHost !== "local"
+    ? `#/session/${encodeURIComponent(sessionName)}/${encodeURIComponent(machineHost)}`
+    : `#/session/${encodeURIComponent(sessionName)}`;
+  if (location.hash !== hashTarget) {
+    history.pushState(null, "", hashTarget);
+  }
+
   $("#terminal-session-name").textContent = sessionName;
 
   showView("terminal");
@@ -964,16 +992,28 @@ function openTerminal(sessionName, machineHost = "local") {
     ws.send(JSON.stringify({ type: "input", data: `\x1b[<${button};${col};${row}M` }));
   };
 
-  // Desktop: forward wheel events to the inner app when on alt-screen.
-  // When on main screen, let xterm.js handle wheel as scrollback (default).
+  // Slow down trackpad/two-finger scroll on both screens.
+  // Main screen: accumulator-based, 1 line per SCROLL_SENSITIVITY px.
+  // Alt screen: fewer SGR wheel events per tick (same divisor).
+  let scrollAccum = 0;
+  const SCROLL_SENSITIVITY = 120;
+
   container.addEventListener("wheel", (e) => {
-    if (!isAltScreen()) return;
     if (e.deltaY === 0) return;
-    const direction = e.deltaY < 0 ? "up" : "down";
-    const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / 40));
-    for (let i = 0; i < notches; i++) sendWheel(direction, e.clientX, e.clientY);
     e.preventDefault();
     e.stopPropagation();
+
+    if (isAltScreen()) {
+      const direction = e.deltaY < 0 ? "up" : "down";
+      const notches = Math.max(1, Math.round(Math.abs(e.deltaY) / SCROLL_SENSITIVITY));
+      for (let i = 0; i < notches; i++) sendWheel(direction, e.clientX, e.clientY);
+    } else {
+      scrollAccum += e.deltaY;
+      while (Math.abs(scrollAccum) >= SCROLL_SENSITIVITY) {
+        term.scrollLines(scrollAccum > 0 ? 1 : -1);
+        scrollAccum -= Math.sign(scrollAccum) * SCROLL_SENSITIVITY;
+      }
+    }
   }, { passive: false, capture: true });
 
   // Mobile: 2-finger vertical swipe.
@@ -1288,6 +1328,9 @@ function closeTerminal() {
   state.activeSession = null;
   state.activeSessionMeta = null;
   document.querySelectorAll(".session-card.active").forEach((c) => c.classList.remove("active"));
+  if (location.hash !== "#/") {
+    history.pushState(null, "", "#/");
+  }
   if (isDesktop()) {
     // On desktop, clear the terminal panel but keep sidebar visible
     $("#terminal-container").innerHTML = '<div class="empty-state">Select a session</div>';
@@ -1670,6 +1713,7 @@ function showSessionContextMenu(e, sessionName, machineHost) {
   }
 
   items.push(`<div class="ctx-divider"></div>`);
+  items.push(`<div class="ctx-item" data-action="hibernate">Hibernate session</div>`);
   items.push(`<div class="ctx-item danger" data-action="kill">Kill session</div>`);
 
   menu.innerHTML = items.join("");
@@ -1681,6 +1725,8 @@ function showSessionContextMenu(e, sessionName, machineHost) {
       const action = item.dataset.action;
       if (action === "kill") {
         confirmDelete(sessionName, machineHost);
+      } else if (action === "hibernate") {
+        hibernateSession(sessionName, machineHost);
       } else if (action === "new-group") {
         const name = prompt("Group name:");
         if (name && name.trim()) {
@@ -1772,6 +1818,33 @@ async function doDelete() {
   }
 }
 
+async function hibernateSession(sessionName, machineHost) {
+  const wasActive = sessionName === state.activeSession;
+  try {
+    const result = await api.hibernateSession(sessionName, machineHost);
+    if (result.error) {
+      if (result.error === "claude-hibernator not configured") {
+        alert("Hibernation is not available.\n\nInstall claude-hibernator and set HIBERNATOR_CLI to enable this feature.");
+      } else {
+        alert("Hibernation failed: " + result.error);
+      }
+      return;
+    }
+  } catch (err) {
+    alert("Hibernation failed: " + (err.message || err));
+    return;
+  }
+  state.sessions = state.sessions.filter(
+    (s) => !(s.name === sessionName && s.machineHost === machineHost)
+  );
+  renderSessions();
+  if (wasActive) {
+    closeTerminal();
+  } else {
+    await loadSessions();
+  }
+}
+
 // --- Event Bindings ---
 $("#back-btn").addEventListener("click", closeTerminal);
 $("#add-session-btn").addEventListener("click", showNewSessionModal);
@@ -1783,6 +1856,11 @@ $("#terminal-reconnect-btn").addEventListener("click", reconnectTerminal);
 $("#terminal-kill-btn").addEventListener("click", () => {
   if (state.activeSession) {
     confirmDelete(state.activeSession, state.activeSessionMeta?.machineHost);
+  }
+});
+$("#terminal-hibernate-btn").addEventListener("click", () => {
+  if (state.activeSession) {
+    hibernateSession(state.activeSession, state.activeSessionMeta?.machineHost);
   }
 });
 
@@ -1916,6 +1994,23 @@ async function init() {
   }
 
   consumeResumeAfterReset();
+
+  // Hash-based URL routing: direct-link to sessions
+  function navigateToHash() {
+    const match = location.hash.match(/^#\/session\/([^/]+)(?:\/([^/]+))?$/);
+    if (match) {
+      const name = decodeURIComponent(match[1]);
+      const host = decodeURIComponent(match[2] || "local");
+      // Only navigate if session exists in list and not already viewing it
+      if (state.sessions.some((s) => s.name === name && (s.machineHost || "local") === host)) {
+        if (state.activeSession !== name || (state.activeSessionMeta?.machineHost || "local") !== host) {
+          openTerminal(name, host);
+        }
+      }
+    }
+  }
+  window.addEventListener("hashchange", navigateToHash);
+  navigateToHash();
 }
 
 init();

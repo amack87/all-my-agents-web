@@ -228,6 +228,33 @@ app.post("/api/hibernated-sessions/:name/restore", async (req, res) => {
   }
 });
 
+// Hibernate a tmux session (claude-hibernator — optional)
+app.post("/api/sessions/:name/hibernate", async (req, res) => {
+  if (!HIBERNATOR_CLI) return res.status(503).json({ error: "claude-hibernator not configured" });
+  if (!validateTarget(res, req.params.name)) return;
+  try {
+    // Use echo to pipe "y" to stdin for the interactive "Force hibernate?" prompt
+    const { stdout } = await execFileAsync("/bin/bash", [
+      "-c", `echo "y" | python3 "${HIBERNATOR_CLI}" hibernate "${req.params.name}"`,
+    ], { timeout: 30000 });
+    res.json({ ok: true, message: stdout.trim() });
+  } catch (err) {
+    const message = err.stderr?.trim() || err.stdout?.trim() || err.message;
+    // If claude-hibernator can't hibernate (not found / not idle), fall back
+    // to killing the raw tmux session directly
+    if (message.includes("No active agent session found") ||
+        message.includes("Session status changed to")) {
+      try {
+        await tmux("kill-session", "-t", req.params.name);
+        return res.json({ ok: true, message: "Session killed (hibernation unavailable, fell back to kill)" });
+      } catch (tmuxErr) {
+        return res.status(500).json({ error: `Session not found and tmux kill failed: ${tmuxErr.message}` });
+      }
+    }
+    res.status(500).json({ error: message });
+  }
+});
+
 // Kill a tmux session
 app.delete("/api/sessions/:name", async (req, res) => {
   if (!validateTarget(res, req.params.name)) return;
@@ -766,6 +793,21 @@ app.delete("/api/proxy/:peerHost/sessions/:name", async (req, res) => {
   }
 });
 
+// Proxy: hibernate session on a peer
+app.post("/api/proxy/:peerHost/sessions/:name/hibernate", async (req, res) => {
+  const config = await resolveConfig();
+  if (!validatePeerHost(res, req.params.peerHost, config)) return;
+
+  try {
+    const url = `http://${req.params.peerHost}/api/sessions/${encodeURIComponent(req.params.name)}/hibernate`;
+    const peerRes = await fetch(url, { method: "POST" });
+    const data = await peerRes.json();
+    res.status(peerRes.status).json(data);
+  } catch {
+    res.status(502).json({ error: "Peer request failed" });
+  }
+});
+
 // WebSocket proxy: terminal on a peer machine
 app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
   const config = await resolveConfig();
@@ -877,7 +919,10 @@ app.post("/api/health/restart", (_req, res) => {
 });
 
 // --- Start ---
-app.listen(PORT, "0.0.0.0", () => {
-  log("INFO", `Server started on http://0.0.0.0:${PORT}`);
-  log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
-});
+export { app };
+if (process.env.NODE_ENV !== "test") {
+  app.listen(PORT, "0.0.0.0", () => {
+    log("INFO", `Server started on http://0.0.0.0:${PORT}`);
+    log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
+  });
+}
