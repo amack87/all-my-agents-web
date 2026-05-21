@@ -19,6 +19,7 @@ launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
 
 - **Port**: 3456 (HTTP + WebSocket), configurable via `ALL_MY_AGENTS_PORT` env var
 - **KeepAlive**: If using launchd, it auto-restarts on crash. Do NOT use `kill` — use `launchctl stop/start`.
+- **launchd PATH**: The launchd plist MUST set `PATH` in `EnvironmentVariables` (e.g. `/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`), otherwise Tailscale discovery fails silently because `tailscale` is not in launchd's default PATH.
 
 ## Architecture
 
