@@ -573,6 +573,36 @@ async function discoverSessions() {
     }
   }
 
+  // Merge in opencode sessions (discovered via claude-hibernator CLI)
+  if (HIBERNATOR_CLI) {
+    try {
+      const hibernatorDir = HIBERNATOR_CLI.replace(/\/cli\.py$/, "");
+      const code = `
+import sys, json
+sys.path.insert(0, ${JSON.stringify(hibernatorDir)})
+from hibernator.opencode import discover_opencode_sessions
+sessions = discover_opencode_sessions()
+print(json.dumps([{
+  "name": s.title or s.session_id,
+  "sessionId": s.session_id,
+  "pid": s.pid,
+  "directory": s.directory,
+  "agent": s.agent,
+  "status": "running",
+  "lastActivity": s.updated,
+  "paneId": "opencode:" + s.session_id,
+} for s in sessions]))
+`;
+      const { stdout } = await execFileAsync("python3", ["-c", code], { timeout: 45000 });
+      const opencodeSessions = JSON.parse(stdout.trim());
+      for (const oc of opencodeSessions) {
+        if (!sessions.some((s) => s.name === oc.name)) {
+          sessions.push(oc);
+        }
+      }
+    } catch { /* best-effort */ }
+  }
+
   // Sort: needsInput first, then working, then idle/unknown by most recent activity
   const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
   sessions.sort((a, b) => {
