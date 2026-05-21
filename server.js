@@ -246,7 +246,7 @@ app.post("/api/sessions/:name/hibernate", async (req, res) => {
         message.includes("Session status changed to")) {
       try {
         await tmux("kill-session", "-t", req.params.name);
-        return res.json({ ok: true, message: "Session killed (hibernation unavailable, fell back to kill)" });
+        return res.json({ ok: true, message: "Session killed (no hibernation data saved)" });
       } catch (tmuxErr) {
         return res.status(500).json({ error: `Session not found and tmux kill failed: ${tmuxErr.message}` });
       }
