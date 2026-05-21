@@ -192,7 +192,7 @@ export async function resolveConfig() {
   return { ...config, peers };
 }
 
-export async function fetchPeerSessions(peer, timeoutMs = 3000) {
+export async function fetchPeerSessions(peer, timeoutMs = 10000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 

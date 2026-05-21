@@ -382,7 +382,7 @@ const api = {
     return fetchJson(url, {}, { timeoutMs: 3500, retries: 1 });
   },
   async getMeshSessions() {
-    return fetchJson(apiUrl("/api/mesh/sessions"), {}, { timeoutMs: 6000, retries: 1 });
+    return fetchJson(apiUrl("/api/mesh/sessions"), {}, { timeoutMs: 15000, retries: 1 });
   },
   async refreshMesh() {
     return fetchJson(apiUrl("/api/mesh/refresh"), { method: "POST" }, { timeoutMs: 12000, retries: 0 });
