@@ -528,40 +528,43 @@ async function discoverSessions() {
 
   const lines = paneOutput.split("\n").filter(Boolean);
   const seen = new Set();
-  const sessions = [];
+  const entries = [];
 
   for (const line of lines) {
     const [sessionName, sessionGroup, paneId, paneTty, currentCmd, windowName, sessionActivity, panePid] = line.split("|||");
 
-    // Skip All My Agents helper sessions
     if (sessionName.startsWith("_ah_")) continue;
 
-    // Deduplicate by session group
     const groupKey = sessionGroup || sessionName;
     if (seen.has(groupKey)) continue;
     seen.add(groupKey);
 
-    // Detect status and agent in parallel
+    entries.push({
+      sessionName, paneId, paneTty, currentCmd, windowName, sessionActivity, panePid
+    });
+  }
+
+  const sessions = await Promise.all(entries.map(async (e) => {
     let status = "unknown";
     let agent = "shell";
     try {
-      const content = await tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => "");
-      const detectedAgent = await detectAgent(panePid, currentCmd, content);
+      const content = await tmux("capture-pane", "-t", e.paneId, "-p", "-J").catch(() => "");
+      const detectedAgent = await detectAgent(e.panePid, e.currentCmd, content);
       status = content ? detectStatus(content) : "unknown";
       agent = detectedAgent;
     } catch { /* ignore */ }
 
-    sessions.push({
-      name: sessionName,
-      paneId,
-      tty: paneTty,
-      currentCommand: currentCmd,
-      windowName,
+    return {
+      name: e.sessionName,
+      paneId: e.paneId,
+      tty: e.paneTty,
+      currentCommand: e.currentCmd,
+      windowName: e.windowName,
       status,
       agent,
-      lastActivity: parseInt(sessionActivity, 10) || 0,
-    });
-  }
+      lastActivity: parseInt(e.sessionActivity, 10) || 0,
+    };
+  }));
 
   // Enrich with Claude session metadata
   const meta = await readClaudeSessionMeta();
