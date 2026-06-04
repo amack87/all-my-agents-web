@@ -598,7 +598,11 @@ print(json.dumps([{
 `;
       const { stdout } = await execFileAsync("python3", ["-c", code], { timeout: 45000 });
       const opencodeSessions = JSON.parse(stdout.trim());
+      // Synthesized sessions (no real tmux pane) whose name is just a
+      // generic fallback like "opencode (pid 1234)" produce inaccessible
+      // sidebar entries. Skip them.
       for (const oc of opencodeSessions) {
+        if (oc.paneId && oc.paneId.startsWith("opencode:") && /^opencode \(pid \d+\)$/.test(oc.name)) continue;
         if (!sessions.some((s) => s.name === oc.name)) {
           sessions.push(oc);
         }
