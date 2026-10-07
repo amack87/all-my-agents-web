@@ -5,10 +5,12 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { readFile, readdir } from "node:fs/promises";
-import { accessSync, createWriteStream, mkdirSync } from "node:fs";
+import { accessSync, createWriteStream, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
 import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh.js";
+import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
+import { buildRestorePlan } from "./restore-plan.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -40,7 +42,7 @@ app.use((_req, res, next) => {
   // Allow cross-origin requests from other All My Agents instances on the tailnet
   // (needed for client-side failover between hosts)
   res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
+  res.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
   next();
 });
@@ -180,78 +182,244 @@ app.get("/api/tmux-sessions", async (_req, res) => {
   }
 });
 
-// List hibernated sessions (claude-hibernator — optional)
-// Set HIBERNATOR_CLI to the path of claude-hibernator's cli.py to enable,
-// or it will be auto-detected from common locations.
-const HIBERNATOR_CLI = (() => {
-  if (process.env.HIBERNATOR_CLI) return process.env.HIBERNATOR_CLI;
-  const candidates = [
-    join(os.homedir(), "Repos", "claude-hibernator", "cli.py"),
-    join(os.homedir(), ".local", "bin", "claude-hibernator", "cli.py"),
-    join(os.homedir(), "claude-hibernator", "cli.py"),
-  ];
-  for (const p of candidates) {
-    try { accessSync(p); return p; } catch { /* skip */ }
-  }
-  return null;
-})();
+// --- Session Registry & Restore ---
+// AMA keeps a live registry of every managed agent session (a tmux session
+// hosting an opencode TUI) keyed by tmux name. The registry is written on every
+// change, so it survives a hard power-off. At startup server.js replays it,
+// recreating each tmux session and resuming the opencode conversation directly
+// with `opencode -s <id>` — no export/import snapshots involved.
+const REGISTRY_PATH = join(LOG_DIR, "active-sessions.json");
+const REGISTRY_POLL_MS = parseInt(process.env.ALL_MY_AGENTS_REGISTRY_POLL_MS || "30000", 10);
+const RESTORE_DELAY_MS = parseInt(process.env.ALL_MY_AGENTS_RESTORE_DELAY_MS || "10000", 10);
+// Not on launchd's PATH, so use the explicit binary (override via OPENCODE_BIN).
+const OPENCODE_BIN = process.env.OPENCODE_BIN || join(os.homedir(), ".opencode", "bin", "opencode");
 
-app.get("/api/hibernated-sessions", async (_req, res) => {
-  if (!HIBERNATOR_CLI) return res.json([]);
+let registryCache = { registry: null };
+
+function loadRegistry() {
   try {
-    const { stdout } = await execFileAsync("python3", [
-      HIBERNATOR_CLI, "list", "--json",
-    ], { timeout: 5000 });
-    const sessions = JSON.parse(stdout.trim());
-    res.json(sessions);
-  } catch (err) {
-    log("ERROR", "Hibernator error", { error: err.message });
-    res.json([]);
+    const parsed = JSON.parse(readFileSync(REGISTRY_PATH, "utf8"));
+    return parsed && Array.isArray(parsed.sessions) ? parsed : null;
+  } catch {
+    return null;
   }
+}
+registryCache.registry = loadRegistry();
+
+function saveRegistry(registry) {
+  const tmp = `${REGISTRY_PATH}.tmp`;
+  writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf8");
+  renameSync(tmp, REGISTRY_PATH);
+}
+
+// Best-effort discovery: every tmux pane hosting an opencode process. Never
+// throws — an empty set is just "nothing to record right now".
+async function discoverManagedSessions() {
+  const SEP = "|||";
+  let paneOutput = "";
+  try {
+    paneOutput = await tmux(
+      "list-panes", "-a", "-F",
+      `#{session_name}${SEP}#{pane_id}${SEP}#{pane_pid}${SEP}#{pane_current_command}${SEP}#{pane_current_path}`,
+    );
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const line of paneOutput.split("\n").filter(Boolean)) {
+    const [name, paneId, panePidRaw, currentCmd, panePath] = line.split(SEP);
+    if (!name || name.startsWith("_ah_")) continue;
+    const panePid = parseInt(panePidRaw, 10) || null;
+    let agent = null;
+    try {
+      const content = await tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => "");
+      agent = panePid ? await detectAgent(panePid, currentCmd, content) : null;
+    } catch { /* ignore */ }
+    // Every pane is tracked — not just opencode ones. An unclassified or
+    // shell pane stays in the restore set and is recreated as a bare shell at
+    // boot; only opencode panes pay for the session-id probe.
+    const sessionId = agent === "opencode" && panePid ? await resolvePaneSessionId(panePid) : null;
+    out.push({ name, dir: panePath || null, sessionId, agent });
+  }
+  return out;
+}
+
+// The pane's process plus its descendants.
+async function paneProcesses(panePid) {
+  const seen = new Set();
+  const queue = [panePid];
+  const pids = [];
+  while (queue.length > 0) {
+    const ppid = queue.shift();
+    if (!ppid || seen.has(ppid)) continue;
+    seen.add(ppid);
+    pids.push(ppid);
+    try {
+      const { stdout } = await execFileAsync("pgrep", ["-lP", String(ppid)], { timeout: 2000 });
+      for (const line of stdout.trim().split("\n").filter(Boolean)) {
+        const pid = parseInt(line.trim().split(/\s+/)[0], 10);
+        if (pid) queue.push(pid);
+      }
+    } catch { /* leaf */ }
+  }
+  return pids;
+}
+
+function parseSessionFlags(args) {
+  const m = args.match(/--session[=\s]+(ses_[A-Za-z0-9]+)|(?:^|\s)-s\s+(ses_[A-Za-z0-9]+)/);
+  const sessionId = (m && (m[1] || m[2])) || null;
+  const p = args.match(/--port[=\s]*(\d+)/);
+  return { sessionId, port: p ? parseInt(p[1], 10) : null };
+}
+
+// Which opencode session is this pane's TUI on? Prefer an explicit
+// -s/--session flag in the process argv; otherwise ask the pane's opencode
+// server which session it is serving.
+async function resolvePaneSessionId(panePid) {
+  const opencodeProcs = [];
+  for (const pid of await paneProcesses(panePid)) {
+    try {
+      const { stdout } = await execFileAsync("ps", ["-o", "args=", "-p", String(pid)], { timeout: 1000 });
+      const args = stdout.trim();
+      if (/\bopencode\b/.test(args) && !/tmux/.test(args)) opencodeProcs.push(args);
+    } catch { /* ignore */ }
+  }
+  let port = null;
+  for (const args of opencodeProcs) {
+    const flags = parseSessionFlags(args);
+    if (flags.sessionId) return flags.sessionId;
+    if (flags.port) port = flags.port;
+  }
+  if (opencodeProcs.length === 0) return null;
+  const targetPort = port || 4096;
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`http://127.0.0.1:${targetPort}/session/status`, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const status = await res.json();
+    const keys = Object.keys(status || {});
+    if (keys.length === 1) return keys[0];
+    const busy = keys.filter((k) => status[k]?.type === "busy");
+    return busy.length === 1 ? busy[0] : null;
+  } catch {
+    return null;
+  }
+}
+
+async function maintainRegistry() {
+  const live = await discoverManagedSessions();
+  const now = new Date().toISOString();
+  const { registry, changed, removed } = reconcileRegistry(live, registryCache.registry, now);
+  registryCache.registry = registry;
+  if (!changed) return;
+  saveRegistry(registry);
+  log("INFO", "Active session registry updated", { sessions: registry.sessions.length, removed: removed.length });
+  for (const r of removed) log("INFO", "Registry prune", r);
+  if (registry.sessions.length > 0) {
+    log("INFO", "Registry contents", registry.sessions.map(
+      (s) => `${s.tmux} → ${s.agent === "opencode"
+        ? (s.sessionId ? `resume ${s.sessionId.slice(0, 24)}` : "no-session-id (will resume -c)")
+        : `recreate-shell (${s.agent || "unclassified"})`}`,
+    ));
+  }
+}
+
+// An opencode session id is resolvable if the binary knows the session. This
+// is the probe that decides between `-s <id>` and the degraded `-c`.
+async function isSessionResolvable(sessionId) {
+  try {
+    await execFileAsync(OPENCODE_BIN, ["export", sessionId, "--sanitize"], {
+      timeout: 60000,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function executeRestoreAction(action) {
+  const tmuxArgs = ["new-session", "-d", "-s", action.name];
+  if (action.dir) tmuxArgs.push("-c", action.dir);
+  if (action.kind === "recreate-shell") {
+    // No command: the pane gets a plain shell in the recorded directory. The
+    // window comes back even when the process state is gone.
+    try {
+      await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+      log("INFO", "Restored shell session", {
+        name: action.name,
+        mode: "recreate-shell",
+        dir: action.dir || null,
+      });
+    } catch (err) {
+      log("ERROR", "Restore failed", { name: action.name, error: err.message });
+    }
+    return;
+  }
+  const cmd = action.continueBest
+    ? `${OPENCODE_BIN} -c`
+    : `${OPENCODE_BIN} -s ${action.sessionId}`;
+  // tmux runs the trailing arg as the pane's initial command, so opencode
+  // starts directly in the new pane — a self-restoring pane, no keystrokes.
+  tmuxArgs.push(cmd);
+  try {
+    await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+    log("INFO", "Restored agent session", {
+      name: action.name,
+      mode: action.continueBest ? "continue-last" : "resume",
+      sessionId: action.sessionId ? action.sessionId.slice(0, 24) : null,
+      dir: action.dir || null,
+    });
+  } catch (err) {
+    log("ERROR", "Restore failed", { name: action.name, error: err.message });
+  }
+}
+
+async function runStartupRestore() {
+  const registry = loadRegistry();
+  registryCache.registry = registry;
+  if (!registry || registry.sessions.length === 0) {
+    log("INFO", "Startup restore: no active-session registry — nothing to restore");
+    return;
+  }
+  const ids = [...new Set(registry.sessions.map((s) => s.sessionId).filter(Boolean))];
+  const resolvable = new Set();
+  for (const id of ids) {
+    if (await isSessionResolvable(id)) resolvable.add(id);
+  }
+  let existingTmux = [];
+  try {
+    existingTmux = (await tmux("list-sessions", "-F", "#{session_name}")).split("\n").filter(Boolean);
+  } catch { /* no tmux */ }
+  const actions = buildRestorePlan({ registry, existingTmux, resolvable });
+  const unresolved = ids.length - resolvable.size;
+  log("INFO", "Startup restore plan", {
+    planSize: actions.length,
+    resolved: resolvable.size,
+    unresolved: unresolved > 0 ? unresolved : undefined,
+  });
+  for (const action of actions) await executeRestoreAction(action);
+  await maintainRegistry();
+}
+
+app.get("/api/registry", (_req, res) => {
+  res.json(registryCache.registry || { version: REGISTRY_VERSION, updatedAt: null, sessions: [] });
 });
 
-// Restore a hibernated session
-app.post("/api/hibernated-sessions/:name/restore", async (req, res) => {
-  if (!HIBERNATOR_CLI) return res.status(503).json({ error: "claude-hibernator not configured" });
-  const name = req.params.name;
-  if (!TMUX_TARGET_RE.test(name)) {
-    return res.status(400).json({ error: "Invalid session name" });
+// Rename a tmux session
+app.post("/api/sessions/:name/rename", async (req, res) => {
+  if (!validateTarget(res, req.params.name)) return;
+  const { newName } = req.body;
+  if (!newName || !TMUX_TARGET_RE.test(newName)) {
+    return res.status(400).json({ error: "Invalid new session name" });
   }
   try {
-    const { stdout } = await execFileAsync("python3", [
-      HIBERNATOR_CLI, "restore", "--json", name,
-    ], { timeout: 30000 });
-    const result = JSON.parse(stdout.trim());
-    res.json(result);
+    await tmux("rename-session", "-t", req.params.name, newName);
+    res.json({ ok: true, oldName: req.params.name, newName });
   } catch (err) {
     res.status(500).json({ error: err.message });
-  }
-});
-
-// Hibernate a tmux session (claude-hibernator — optional)
-app.post("/api/sessions/:name/hibernate", async (req, res) => {
-  if (!HIBERNATOR_CLI) return res.status(503).json({ error: "claude-hibernator not configured" });
-  if (!validateTarget(res, req.params.name)) return;
-  try {
-    // Use echo to pipe "y" to stdin for the interactive "Force hibernate?" prompt
-    const { stdout } = await execFileAsync("/bin/bash", [
-      "-c", `echo "y" | python3 "${HIBERNATOR_CLI}" hibernate "${req.params.name}"`,
-    ], { timeout: 30000 });
-    res.json({ ok: true, message: stdout.trim() });
-  } catch (err) {
-    const message = err.stderr?.trim() || err.stdout?.trim() || err.message;
-    // If claude-hibernator can't hibernate (not found / not idle), fall back
-    // to killing the raw tmux session directly
-    if (message.includes("No active agent session found") ||
-        message.includes("Session status changed to")) {
-      try {
-        await tmux("kill-session", "-t", req.params.name);
-        return res.json({ ok: true, message: "Session killed (no hibernation data saved)" });
-      } catch (tmuxErr) {
-        return res.status(500).json({ error: `Session not found and tmux kill failed: ${tmuxErr.message}` });
-      }
-    }
-    res.status(500).json({ error: message });
   }
 });
 
@@ -576,40 +744,6 @@ async function discoverSessions() {
     }
   }
 
-  // Merge in opencode sessions (discovered via claude-hibernator CLI)
-  if (HIBERNATOR_CLI) {
-    try {
-      const hibernatorDir = HIBERNATOR_CLI.replace(/\/cli\.py$/, "");
-      const code = `
-import sys, json
-sys.path.insert(0, ${JSON.stringify(hibernatorDir)})
-from hibernator.opencode import discover_opencode_sessions
-sessions = discover_opencode_sessions()
-print(json.dumps([{
-  "name": s.title or s.session_id,
-  "sessionId": s.session_id,
-  "pid": s.pid,
-  "directory": s.directory,
-  "agent": s.agent,
-  "status": "running",
-  "lastActivity": s.updated,
-  "paneId": "opencode:" + s.session_id,
-} for s in sessions]))
-`;
-      const { stdout } = await execFileAsync("python3", ["-c", code], { timeout: 45000 });
-      const opencodeSessions = JSON.parse(stdout.trim());
-      // Synthesized sessions (no real tmux pane) whose name is just a
-      // generic fallback like "opencode (pid 1234)" produce inaccessible
-      // sidebar entries. Skip them.
-      for (const oc of opencodeSessions) {
-        if (oc.paneId && oc.paneId.startsWith("opencode:") && /^opencode \(pid \d+\)$/.test(oc.name)) continue;
-        if (!sessions.some((s) => s.name === oc.name)) {
-          sessions.push(oc);
-        }
-      }
-    } catch { /* best-effort */ }
-  }
-
   // Sort: needsInput first, then working, then idle/unknown by most recent activity
   const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
   sessions.sort((a, b) => {
@@ -830,14 +964,18 @@ app.delete("/api/proxy/:peerHost/sessions/:name", async (req, res) => {
   }
 });
 
-// Proxy: hibernate session on a peer
-app.post("/api/proxy/:peerHost/sessions/:name/hibernate", async (req, res) => {
+// Proxy: rename session on a peer
+app.post("/api/proxy/:peerHost/sessions/:name/rename", async (req, res) => {
   const config = await resolveConfig();
   if (!validatePeerHost(res, req.params.peerHost, config)) return;
 
   try {
-    const url = `http://${req.params.peerHost}/api/sessions/${encodeURIComponent(req.params.name)}/hibernate`;
-    const peerRes = await fetch(url, { method: "POST" });
+    const url = `http://${req.params.peerHost}/api/sessions/${encodeURIComponent(req.params.name)}/rename`;
+    const peerRes = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
     const data = await peerRes.json();
     res.status(peerRes.status).json(data);
   } catch {
@@ -956,10 +1094,21 @@ app.post("/api/health/restart", (_req, res) => {
 });
 
 // --- Start ---
+function startMaintenance() {
+  setTimeout(() => {
+    runStartupRestore().catch((err) => log("ERROR", "Startup restore failed", { error: err.message }));
+  }, RESTORE_DELAY_MS).unref();
+  // No reconcile before restore: the restore must replay the on-disk registry
+  // (recreating dead-known sessions) before the first live scan can prune
+  // entries that are momentarily absent.
+  setInterval(() => maintainRegistry().catch(() => {}), REGISTRY_POLL_MS).unref();
+}
+
 export { app };
 if (process.env.NODE_ENV !== "test") {
   app.listen(PORT, "0.0.0.0", () => {
     log("INFO", `Server started on http://0.0.0.0:${PORT}`);
     log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
+    startMaintenance();
   });
 }
