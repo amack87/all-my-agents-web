@@ -98,7 +98,9 @@ launchctl load ~/Library/LaunchAgents/com.allmyagents.plist
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ALL_MY_AGENTS_PORT` | `3456` | Server port |
-| `HIBERNATOR_CLI` | _(none)_ | Path to claude-hibernator `cli.py` (optional) |
+| `OPENCODE_BIN` | `~/.opencode/bin/opencode` | Path to the opencode binary used for session resume |
+| `ALL_MY_AGENTS_REGISTRY_POLL_MS` | `30000` | How often the live session registry is re-synced |
+| `ALL_MY_AGENTS_RESTORE_DELAY_MS` | `10000` | Delay after server start before replaying the session registry |
 
 ## Access
 

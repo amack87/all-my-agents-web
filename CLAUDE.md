@@ -36,6 +36,9 @@ launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
 - **Init buffer**: Terminal connections buffer initial PTY output and write it as one chunk to prevent visible scroll-from-top flicker.
 - **No HTTPS**: Relies on Tailscale network isolation for security. Do not expose port 3456 to the public internet.
 
-## Optional Integrations
+## Session Restore & Registry
 
-- **claude-hibernator**: Set `HIBERNATOR_CLI` env var to the path of `cli.py` to enable hibernated session list/restore. Without it, those endpoints return empty results gracefully.
+- **Continuous registry**: The server keeps a live registry of managed sessions (`~/.local/state/all-my-agents/active-sessions.json`, one entry per tmux session hosting an opencode TUI) and rewrites it on every change. Restore replays the registry at startup — no shutdown hook, so hard power-off is safe; conversations themselves live in opencode's own store and are resumed, not re-imported.
+- **Resume via native flags**: Restored panes launch `opencode -s <session-id>` (or `opencode -c` when the recorded id no longer resolves). Every AMA-managed pane launches opencode with `-s` so panes self-restore.
+- **Env vars**: `OPENCODE_BIN` (default `~/.opencode/bin/opencode`), `ALL_MY_AGENTS_REGISTRY_POLL_MS` (default 30000), `ALL_MY_AGENTS_RESTORE_DELAY_MS` (default 10000). Live state is exposed at `GET /api/registry`.
+

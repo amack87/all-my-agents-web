@@ -438,23 +438,38 @@ html, body {
 }
 
 /* --- Zoom Popup --- */
-.zoom-popup {
+.settings-menu {
   position: fixed;
   top: calc(var(--safe-top) + 56px);
   right: 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  width: min(320px, calc(100vw - 24px));
+  max-height: calc(100vh - var(--safe-top) - 72px);
+  overflow-y: auto;
   background: var(--bg-card);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 8px 12px;
+  border-radius: 12px;
+  padding: 12px;
   z-index: 150;
-  box-shadow: 0 4px 20px var(--shadow-heavy);
+  box-shadow: 0 8px 30px var(--shadow-heavy);
 }
 
-.zoom-popup.hidden {
+.settings-menu.hidden {
   display: none;
+}
+
+.settings-section + .settings-section {
+  border-top: 1px solid var(--border);
+  margin-top: 12px;
+  padding-top: 12px;
+}
+
+.settings-header {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 10px;
 }
 
 #zoom-level {
@@ -463,6 +478,79 @@ html, body {
   min-width: 40px;
   text-align: center;
   font-variant-numeric: tabular-nums;
+}
+
+.zoom-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.zoom-row .zoom-btn-text {
+  margin-left: auto;
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 14px;
+  color: var(--text);
+  user-select: none;
+}
+
+.checkbox-row + .checkbox-row {
+  margin-top: 8px;
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.field-row input {
+  width: 72px;
+  padding: 6px 8px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  outline: none;
+  text-align: right;
+}
+
+.field-row input:focus {
+  border-color: var(--accent);
+}
+
+.settings-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  margin-top: 10px;
+}
+
+.settings-status {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .zoom-btn {

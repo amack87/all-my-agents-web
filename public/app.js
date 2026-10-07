@@ -369,11 +369,15 @@ const api = {
       : apiUrl(`/api/sessions/${encodeURIComponent(name)}`);
     return fetchJson(url, { method: "DELETE" }, { timeoutMs: 7000 });
   },
-  async hibernateSession(name, machineHost) {
+  async renameSession(name, newName, machineHost) {
     const url = machineHost && machineHost !== "local"
-      ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}/hibernate`)
-      : apiUrl(`/api/sessions/${encodeURIComponent(name)}/hibernate`);
-    return fetchJson(url, { method: "POST" }, { timeoutMs: 15000 });
+      ? apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions/${encodeURIComponent(name)}/rename`)
+      : apiUrl(`/api/sessions/${encodeURIComponent(name)}/rename`);
+    return fetchJson(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ newName }),
+    }, { timeoutMs: 7000 });
   },
   async capturePane(target, machineHost) {
     const url = machineHost && machineHost !== "local"
@@ -1461,7 +1465,7 @@ function setupSwipeBack(viewEl, goBackFn) {
 setupSwipeBack(views.terminal, closeTerminal);
 
 // --- Add Session Modal ---
-let addSessionMode = "pick"; // pick | new | existing | hibernated
+let addSessionMode = "pick"; // pick | new | existing
 
 function showNewSessionModal() {
   const modal = $("#new-session-modal");
@@ -1480,18 +1484,16 @@ function setAddSessionMode(mode) {
   $("#modal-pick").classList.toggle("hidden", mode !== "pick");
   $("#modal-new").classList.toggle("hidden", mode !== "new");
   $("#modal-existing").classList.toggle("hidden", mode !== "existing");
-  $("#modal-hibernated").classList.toggle("hidden", mode !== "hibernated");
 
   // Back button
   $("#modal-back").classList.toggle("hidden", mode === "pick");
 
   // Title
-  const titles = { pick: "Add Session", new: "New Session", existing: "Existing Sessions", hibernated: "Hibernated" };
+  const titles = { pick: "Add Session", new: "New Session", existing: "Existing Sessions" };
   $("#modal-title").textContent = titles[mode] || "Add Session";
 
   // Load data when switching to list modes
   if (mode === "existing") loadExistingSessions();
-  if (mode === "hibernated") loadHibernatedSessions();
   if (mode === "new") {
     const input = $("#new-session-name");
     input.value = "";
@@ -1618,53 +1620,6 @@ async function loadExistingSessions() {
   }
 }
 
-async function loadHibernatedSessions() {
-  const container = $("#hibernated-sessions-list");
-  container.innerHTML = '<div class="empty-state" style="height:100px">Loading...</div>';
-
-  try {
-    const res = await fetch(apiUrl("/api/hibernated-sessions"));
-    const sessions = await res.json();
-
-    if (sessions.length === 0) {
-      container.innerHTML = '<div class="empty-state" style="height:100px">No hibernated sessions</div>';
-      return;
-    }
-
-    container.innerHTML = sessions.map((s) => {
-      const dir = s.working_directory ? s.working_directory.split("/").pop() : "";
-      const date = (s.hibernated_at || "").substring(0, 16).replace("T", " ");
-      return `<div class="modal-list-item" data-session-name="${esc(s.session_name)}">
-        <span class="item-name">${esc(s.session_name)}</span>
-        <span class="item-meta">${esc(dir || date)}</span>
-      </div>`;
-    }).join("");
-
-    container.querySelectorAll(".modal-list-item").forEach((item) => {
-      item.addEventListener("click", async () => {
-        const name = item.dataset.sessionName;
-        item.querySelector(".item-meta").textContent = "Restoring...";
-
-        try {
-          const res = await fetch(apiUrl(`/api/hibernated-sessions/${encodeURIComponent(name)}/restore`), { method: "POST" });
-          const result = await res.json();
-          if (result.success) {
-            hideNewSessionModal();
-            await loadSessions();
-            openTerminal(name);
-          } else {
-            item.querySelector(".item-meta").textContent = result.error || "Failed";
-          }
-        } catch {
-          item.querySelector(".item-meta").textContent = "Error";
-        }
-      });
-    });
-  } catch {
-    container.innerHTML = '<div class="empty-state" style="height:100px">Failed to load</div>';
-  }
-}
-
 // --- Context Menus ---
 function hideContextMenu() {
   const menu = $("#context-menu");
@@ -1713,7 +1668,7 @@ function showSessionContextMenu(e, sessionName, machineHost) {
   }
 
   items.push(`<div class="ctx-divider"></div>`);
-  items.push(`<div class="ctx-item" data-action="hibernate">Hibernate session</div>`);
+  items.push(`<div class="ctx-item" data-action="rename">Rename session</div>`);
   items.push(`<div class="ctx-item danger" data-action="kill">Kill session</div>`);
 
   menu.innerHTML = items.join("");
@@ -1723,10 +1678,10 @@ function showSessionContextMenu(e, sessionName, machineHost) {
   menu.querySelectorAll(".ctx-item").forEach((item) => {
     item.addEventListener("click", () => {
       const action = item.dataset.action;
-      if (action === "kill") {
+      if (action === "rename") {
+        renameSessionAction(sessionName, machineHost);
+      } else if (action === "kill") {
         confirmDelete(sessionName, machineHost);
-      } else if (action === "hibernate") {
-        hibernateSession(sessionName, machineHost);
       } else if (action === "new-group") {
         const name = prompt("Group name:");
         if (name && name.trim()) {
@@ -1818,31 +1773,46 @@ async function doDelete() {
   }
 }
 
-async function hibernateSession(sessionName, machineHost) {
-  const wasActive = sessionName === state.activeSession;
+async function renameSessionAction(sessionName, machineHost) {
+  const newName = prompt(`Rename "${sessionName}" to:`);
+  if (!newName || !newName.trim() || newName.trim() === sessionName) return;
+
+  const trimmed = newName.trim();
   try {
-    const result = await api.hibernateSession(sessionName, machineHost);
+    const result = await api.renameSession(sessionName, trimmed, machineHost);
     if (result.error) {
-      if (result.error === "claude-hibernator not configured") {
-        alert("Hibernation is not available.\n\nInstall claude-hibernator and set HIBERNATOR_CLI to enable this feature.");
-      } else {
-        alert("Hibernation failed: " + result.error);
-      }
+      alert("Rename failed: " + result.error);
       return;
     }
   } catch (err) {
-    alert("Hibernation failed: " + (err.message || err));
+    alert("Rename failed: " + (err.message || err));
     return;
   }
-  state.sessions = state.sessions.filter(
-    (s) => !(s.name === sessionName && s.machineHost === machineHost)
-  );
-  renderSessions();
-  if (wasActive) {
-    closeTerminal();
-  } else {
-    await loadSessions();
+
+  const sKey = sessionKey(sessionName, machineHost);
+  const newSKey = sessionKey(trimmed, machineHost);
+
+  const groupData = getGroups();
+  for (const [gn, members] of Object.entries(groupData.groups)) {
+    const idx = members.indexOf(sKey);
+    if (idx !== -1) {
+      groupData.groups[gn][idx] = newSKey;
+      saveGroups(groupData);
+      break;
+    }
   }
+
+  if (isActiveSession(sessionName, machineHost)) {
+    state.activeSession = trimmed;
+  }
+
+  state.sessions = state.sessions.map((s) =>
+    s.name === sessionName && (machineHost || "local") === (s.machineHost || "local")
+      ? { ...s, name: trimmed }
+      : s
+  );
+  state.renderedSessionsSignature = "";
+  renderSessions();
 }
 
 // --- Event Bindings ---
@@ -1856,11 +1826,6 @@ $("#terminal-reconnect-btn").addEventListener("click", reconnectTerminal);
 $("#terminal-kill-btn").addEventListener("click", () => {
   if (state.activeSession) {
     confirmDelete(state.activeSession, state.activeSessionMeta?.machineHost);
-  }
-});
-$("#terminal-hibernate-btn").addEventListener("click", () => {
-  if (state.activeSession) {
-    hibernateSession(state.activeSession, state.activeSessionMeta?.machineHost);
   }
 });
 
@@ -1950,20 +1915,29 @@ function zoomReset() {
   applyZoom();
 }
 
-function toggleZoomPopup() {
-  $("#zoom-popup").classList.toggle("hidden");
+function toggleSettingsMenu(open) {
+  const menu = $("#settings-menu");
+  const shouldOpen = open !== undefined ? open : menu.classList.contains("hidden");
+  if (shouldOpen) {
+    menu.classList.remove("hidden");
+  } else {
+    menu.classList.add("hidden");
+  }
 }
 
-// Close zoom popup when tapping elsewhere
+// Close settings menu when tapping elsewhere
 document.addEventListener("click", (e) => {
-  const popup = $("#zoom-popup");
-  const btn = $("#zoom-btn");
-  if (!popup.classList.contains("hidden") && !popup.contains(e.target) && !btn.contains(e.target)) {
-    popup.classList.add("hidden");
+  const menu = $("#settings-menu");
+  const btn = $("#settings-btn");
+  if (!menu.classList.contains("hidden") && !menu.contains(e.target) && !btn.contains(e.target)) {
+    menu.classList.add("hidden");
   }
 });
 
-$("#zoom-btn").addEventListener("click", toggleZoomPopup);
+// Don't let clicks inside the menu close it (checkbox/label interactions)
+$("#settings-menu").addEventListener("click", (e) => e.stopPropagation());
+
+$("#settings-btn").addEventListener("click", () => toggleSettingsMenu());
 $("#zoom-up").addEventListener("click", zoomUp);
 $("#zoom-down").addEventListener("click", zoomDown);
 $("#zoom-reset").addEventListener("click", zoomReset);
