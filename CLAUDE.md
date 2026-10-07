@@ -42,3 +42,16 @@ launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
 - **Resume via native flags**: Restored panes launch `opencode -s <session-id>` (or `opencode -c` when the recorded id no longer resolves). Every AMA-managed pane launches opencode with `-s` so panes self-restore.
 - **Env vars**: `OPENCODE_BIN` (default `~/.opencode/bin/opencode`), `ALL_MY_AGENTS_REGISTRY_POLL_MS` (default 30000), `ALL_MY_AGENTS_RESTORE_DELAY_MS` (default 10000). Live state is exposed at `GET /api/registry`.
 
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs live as GitHub issues (`gh` CLI), PRDs as `PRD: <feature>` and tickets as `<n> — <title>`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical roles map 1:1 to `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
