@@ -697,6 +697,7 @@ function statusLabel(status) {
     needsInput: "Input",
     working: "Working",
     idle: "Idle",
+    ended: "Ended",
     unknown: "...",
   };
   return labels[status] || status;
@@ -1240,6 +1241,14 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
           term.write("\r\n\x1b[33mPTY allocation failed — the server may need a restart.\x1b[m\r\n");
           term.write("\x1b[33mClose this session, then use Add Session → New → the server will self-heal.\x1b[m\r\n");
         }
+      } else if (msg.type === "status") {
+        // Event-derived status pushed by the server — update the dot now
+        // instead of waiting for the next capture poll.
+        if (msg.name === sessionName || msg.target === sessionName) {
+          const dot = $("#terminal-status-dot");
+          if (dot) dot.className = `status-dot ${msg.status}`;
+        }
+        loadSessions();
       }
     } catch {
       writeBuffered(evt.data);

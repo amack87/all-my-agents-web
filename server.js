@@ -12,6 +12,7 @@ import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh
 import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
 import { buildRestorePlan } from "./restore-plan.js";
 import { detectStatusFromScreen } from "./agent-status.js";
+import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -194,6 +195,9 @@ const REGISTRY_POLL_MS = parseInt(process.env.ALL_MY_AGENTS_REGISTRY_POLL_MS || 
 const RESTORE_DELAY_MS = parseInt(process.env.ALL_MY_AGENTS_RESTORE_DELAY_MS || "10000", 10);
 // A pane with no visible prompt and no output change for this long is at rest.
 const QUIET_MS = parseInt(process.env.ALL_MY_AGENTS_QUIET_MS || "6000", 10);
+// Event-derived working/idle older than this falls back to screen detection.
+// needsInput/ended never expire — see agent-events.js.
+const EVENT_TTL_MS = parseInt(process.env.ALL_MY_AGENTS_EVENT_TTL_MS || "120000", 10);
 // Not on launchd's PATH, so use the explicit binary (override via OPENCODE_BIN).
 const OPENCODE_BIN = process.env.OPENCODE_BIN || join(os.homedir(), ".opencode", "bin", "opencode");
 
@@ -213,6 +217,44 @@ function saveRegistry(registry) {
   const tmp = `${REGISTRY_PATH}.tmp`;
   writeFileSync(tmp, JSON.stringify(registry, null, 2), "utf8");
   renameSync(tmp, REGISTRY_PATH);
+}
+
+// --- Event-derived status ---------------------------------------------------
+// Adapters POST canonical lifecycle events (see agent-events.js). The reducer's
+// output is stored per session — keyed by tmux session name (registry
+// identity) with a pane-id alias so read sites can look up either form — and
+// overrides screen detection while fresh.
+const eventStates = new Map(); // session name or pane id → { status, updatedAt }
+const surfaceTokens = new Map(); // surface token → session name (minted at pane launch)
+const terminalClients = new Set(); // connected /ws/terminal sockets, for status push
+
+function getEventState(key) {
+  return eventStates.get(key) || null;
+}
+
+function setEventState(name, paneId, state) {
+  eventStates.set(name, state);
+  eventStates.set(paneId, state);
+}
+
+// Effective status for a session: fresh event state wins, else screen.
+function effectiveStatus(paneKey, sessionName, content) {
+  const state = getEventState(paneKey)
+    || (sessionName ? getEventState(sessionName) : null);
+  const fromEvent = eventStatus(state, Date.now(), EVENT_TTL_MS);
+  if (fromEvent) return { status: fromEvent, source: "event" };
+  if (!content) return { status: "unknown", source: "screen" };
+  return {
+    status: detectStatusFromScreen(content, recentOutput(paneKey, content)),
+    source: "screen",
+  };
+}
+
+function broadcastStatus(payload) {
+  const msg = JSON.stringify(payload);
+  for (const ws of terminalClients) {
+    if (ws.readyState === 1) ws.send(msg);
+  }
 }
 
 // Best-effort discovery: every tmux pane hosting an opencode process. Never
@@ -442,11 +484,73 @@ app.get("/api/sessions/:target/capture", async (req, res) => {
   if (!validateTarget(res, req.params.target)) return;
   try {
     const content = await tmux("capture-pane", "-t", req.params.target, "-p", "-J");
-    const status = detectStatusFromScreen(content, recentOutput(req.params.target, content));
-    res.json({ content, status });
+    const { status, source } = effectiveStatus(req.params.target, null, content);
+    res.json({ content, status, source });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Accept a canonical lifecycle event from an adapter. Identity must resolve
+// (surface token → registry session id) or the event is rejected unmatched;
+// unknown event names are accepted as no-ops. A fresh event-derived status
+// then overrides screen detection until it goes stale.
+app.post("/api/events", async (req, res) => {
+  const { event, sessionId, surfaceToken } = req.body || {};
+  const malformed =
+    typeof event !== "string" || !event ||
+    (sessionId !== undefined && (typeof sessionId !== "string" || !sessionId)) ||
+    (surfaceToken !== undefined && (typeof surfaceToken !== "string" || !surfaceToken));
+  if (malformed) {
+    return res.status(400).json({ error: "Malformed event payload" });
+  }
+
+  const identity = resolveIdentity(
+    { surfaceToken, sessionId },
+    {
+      surfaceTokens,
+      registrySessions: registryCache.registry?.sessions || [],
+    },
+  );
+  if (!identity.ok) {
+    return res.status(422).json({ error: "Unmatched", reason: identity.reason });
+  }
+  const name = identity.name;
+  if (!TMUX_TARGET_RE.test(name)) {
+    return res.status(422).json({ error: "Unmatched", reason: "unmatched" });
+  }
+
+  // Map the registry's session name to a live pane id (the key used by
+  // screen detection and the terminal websockets).
+  let paneId = null;
+  try {
+    const out = await tmux("list-panes", "-t", name, "-F", "#{pane_id}");
+    paneId = out.split("\n")[0]?.trim() || null;
+  } catch { /* session gone — treated as unmatched below */ }
+  if (!paneId) {
+    return res.status(422).json({ error: "Unmatched", reason: "unmatched" });
+  }
+
+  const prev = getEventState(name) || getEventState(paneId);
+  const next = applyEvent(prev, event, Date.now());
+  if (next) setEventState(name, paneId, next);
+
+  const known = EVENT_TYPES.includes(event);
+  const status = eventStatus(next, Date.now(), EVENT_TTL_MS);
+  if (status) {
+    broadcastStatus({ type: "status", target: paneId, name, status, source: "event" });
+  }
+  log("INFO", "Status event", { name, paneId, event, known, status, changed: (prev?.status ?? null) !== (next?.status ?? null) });
+  res.json({
+    ok: true,
+    target: paneId,
+    name,
+    event,
+    known,
+    status,
+    source: status ? "event" : null,
+    changed: (prev?.status ?? null) !== (next?.status ?? null),
+  });
 });
 
 // Enrichment: read Claude session metadata
@@ -472,6 +576,7 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
     ws.close();
     return;
   }
+  terminalClients.add(ws);
 
   // Heartbeat: server pings every 30s, terminates if no pong within 10s
   let alive = true;
@@ -575,6 +680,7 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
 
   ws.on("close", (code, reason) => {
     clearInterval(heartbeat);
+    terminalClients.delete(ws);
     log("INFO", "WS disconnect", { target, code, reason: reason?.toString() });
     if (ptyProcess) {
       // Detach cleanly instead of killing the tmux session
@@ -717,11 +823,14 @@ async function discoverSessions() {
 
   const sessions = await Promise.all(entries.map(async (e) => {
     let status = "unknown";
+    let statusSource = "screen";
     let agent = "shell";
     try {
       const content = await tmux("capture-pane", "-t", e.paneId, "-p", "-J").catch(() => "");
       const detectedAgent = await detectAgent(e.panePid, e.currentCmd, content);
-      status = content ? detectStatusFromScreen(content, recentOutput(e.paneId, content)) : "unknown";
+      const eff = effectiveStatus(e.paneId, e.sessionName, content);
+      status = eff.status;
+      statusSource = eff.source;
       agent = detectedAgent;
     } catch { /* ignore */ }
 
@@ -732,6 +841,7 @@ async function discoverSessions() {
       currentCommand: e.currentCmd,
       windowName: e.windowName,
       status,
+      source: statusSource,
       agent,
       lastActivity: parseInt(e.sessionActivity, 10) || 0,
     };
@@ -747,11 +857,11 @@ async function discoverSessions() {
     }
   }
 
-  // Sort: needsInput first, then working, then idle/unknown by most recent activity
-  const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
+  // Sort: needsInput first, then working, then idle, then ended, then unknown
+  const priority = { needsInput: 0, working: 1, idle: 2, ended: 3, unknown: 4 };
   sessions.sort((a, b) => {
-    const pa = priority[a.status] ?? 3;
-    const pb = priority[b.status] ?? 3;
+    const pa = priority[a.status] ?? 4;
+    const pb = priority[b.status] ?? 4;
     if (pa !== pb) return pa - pb;
     // Within same priority, sort by most recent activity first
     return (b.lastActivity || 0) - (a.lastActivity || 0);
