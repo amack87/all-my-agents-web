@@ -13,6 +13,7 @@ import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
 import { buildRestorePlan } from "./restore-plan.js";
 import { detectStatusFromScreen } from "./agent-status.js";
 import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
+import { newSurfaceToken, buildLaunchArgs } from "./surface-token.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -165,7 +166,11 @@ app.post("/api/sessions", async (req, res) => {
     return res.status(400).json({ error: "Invalid session name (alphanumeric, -, _ only)" });
   }
   try {
-    await tmux("new-session", "-d", "-s", name);
+    // Mint a surface token for the new pane and pass it through its environment,
+    // so an agent adapter inside the pane can identify itself on /api/events.
+    const token = newSurfaceToken();
+    surfaceTokens.set(token, name);
+    await tmux(...buildLaunchArgs({ name, token }));
     res.json({ ok: true, name });
   } catch (err) {
     recordSpawnError(err);
@@ -386,8 +391,11 @@ async function isSessionResolvable(sessionId) {
 }
 
 async function executeRestoreAction(action) {
-  const tmuxArgs = ["new-session", "-d", "-s", action.name];
-  if (action.dir) tmuxArgs.push("-c", action.dir);
+  // Same surface-token binding as POST /api/sessions, so a restored pane is
+  // identifiable to its adapter too.
+  const token = newSurfaceToken();
+  surfaceTokens.set(token, action.name);
+  const tmuxArgs = buildLaunchArgs({ name: action.name, dir: action.dir, token });
   if (action.kind === "recreate-shell") {
     // No command: the pane gets a plain shell in the recorded directory. The
     // window comes back even when the process state is gone.
@@ -462,6 +470,10 @@ app.post("/api/sessions/:name/rename", async (req, res) => {
   }
   try {
     await tmux("rename-session", "-t", req.params.name, newName);
+    // Keep the pane's surface-token binding pointing at the new name.
+    for (const [tok, nm] of surfaceTokens) {
+      if (nm === req.params.name) surfaceTokens.set(tok, newName);
+    }
     res.json({ ok: true, oldName: req.params.name, newName });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -473,6 +485,10 @@ app.delete("/api/sessions/:name", async (req, res) => {
   if (!validateTarget(res, req.params.name)) return;
   try {
     await tmux("kill-session", "-t", req.params.name);
+    // Drop any surface tokens bound to the dead pane.
+    for (const [tok, nm] of [...surfaceTokens]) {
+      if (nm === req.params.name) surfaceTokens.delete(tok);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });

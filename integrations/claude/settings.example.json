@@ -1,0 +1,26 @@
+{
+  "$comment": "Example Claude Code hook settings for the AMA status adapter. Point the command paths at integrations/claude/ama-status-hook.js in your AMA checkout (absolute path required). Install by merging this 'hooks' block into ~/.claude/settings.json (or a project .claude/settings.json), or pass the file with `claude --settings <file>`. The hook reads the event from stdin and the pane's AMA_SURFACE_TOKEN from the environment; it fails open and never blocks Claude. See the README for steps.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "PreToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "*", "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "Notification": [
+      { "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "node /ABSOLUTE/PATH/TO/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ]
+  }
+}
