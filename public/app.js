@@ -4,6 +4,9 @@ import { FitAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/+
 import { WebLinksAddon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0.11.0/+esm";
 import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicode11@0.8.0/+esm";
 
+// --- Sidebar ordering (pure, DOM-free) ---
+import { moveSession, moveGroup, resolveOrder } from "./session-order.js";
+
 // --- Theme Helpers ---
 function getTerminalTheme() {
   const isLight = window.matchMedia("(prefers-color-scheme: light)").matches;
@@ -233,13 +236,16 @@ const state = {
 const GROUPS_STORAGE_KEY = "allmyagents-session-groups";
 
 function loadGroups() {
-  const fallback = { groups: {}, collapsed: {}, order: [] };
+  const fallback = { groups: {}, collapsed: {}, order: [], ungroupedOrder: [] };
   const data = getStoredJson(GROUPS_STORAGE_KEY, fallback);
   if (!data || typeof data !== "object") return fallback;
   return {
     groups: data.groups && typeof data.groups === "object" ? data.groups : {},
     collapsed: data.collapsed && typeof data.collapsed === "object" ? data.collapsed : {},
     order: Array.isArray(data.order) ? data.order.filter((n) => typeof n === "string") : [],
+    ungroupedOrder: Array.isArray(data.ungroupedOrder)
+      ? data.ungroupedOrder.filter((k) => typeof k === "string")
+      : [],
   };
 }
 
@@ -285,6 +291,7 @@ function addToGroup(groupName, sKey) {
   for (const [gn, members] of Object.entries(data.groups)) {
     data.groups[gn] = members.filter((k) => k !== sKey);
   }
+  data.ungroupedOrder = (data.ungroupedOrder || []).filter((k) => k !== sKey);
   if (!data.groups[groupName]) {
     data.groups[groupName] = [];
     data.order = [...data.order.filter((n) => n !== groupName), groupName];
@@ -297,6 +304,10 @@ function removeFromGroup(sKey) {
   const data = loadGroups();
   for (const [gn, members] of Object.entries(data.groups)) {
     data.groups[gn] = members.filter((k) => k !== sKey);
+  }
+  // Return the tile to the ungrouped region (bottom) rather than dropping it.
+  if (!(data.ungroupedOrder || []).includes(sKey)) {
+    data.ungroupedOrder = [...(data.ungroupedOrder || []), sKey];
   }
   saveGroups(data);
 }
@@ -479,6 +490,7 @@ function renderSessionCard(s, showMachineLabel) {
          data-machine="${esc(s.machine)}"
          data-machine-host="${esc(s.machineHost)}"
          data-session-key="${esc(sessionKey(s.name, s.machineHost))}">
+      <span class="drag-handle" data-drag-handle="session" role="button" aria-label="Drag to reorder" title="Drag to reorder">&#10495;</span>
       <div class="status-dot ${s.status}" style="${activityDotStyle(s)}"></div>
       <div class="session-info">
         <div class="session-top-row">
@@ -503,11 +515,14 @@ function renderSessions() {
     : state.sessions.filter((s) => s.machine === state.machineFilter);
 
   const groupData = getGroups();
+  const resolved = resolveOrder(groupData, filtered, (s) => sessionKey(s.name, s.machineHost));
+  if (resolved.changed) saveGroups(resolved.data);
+
   const signature = [
     state.machineFilter,
     state.hasPeers ? "peers" : "local",
     state.activeSession || "",
-    JSON.stringify(groupData),
+    JSON.stringify(resolved.data),
     ...filtered.map((s) => [
       s.name,
       s.machine || "",
@@ -544,80 +559,56 @@ function renderSessions() {
 
   const showMachineLabel = state.hasPeers;
 
-  // Partition sessions into groups and ungrouped
-  const sessionsByKey = new Map(filtered.map((s) => [sessionKey(s.name, s.machineHost), s]));
-  // Also index by name for fuzzy matching when machineHost changes
-  const sessionsByName = new Map();
-  for (const s of filtered) {
-    if (!sessionsByName.has(s.name)) sessionsByName.set(s.name, s);
-  }
-  const groupedKeys = new Set();
-  let needsGroupSave = false;
+  // Render groups in the persisted order (empty groups keep a header so they stay droppable).
   const html = [];
-
-  // Render groups in order
-  for (const groupName of groupData.order) {
-    const storedKeys = groupData.groups[groupName] || [];
-    // Resolve stored keys: try exact match first, then fall back to name match
-    const resolvedSessions = [];
-    for (const k of storedKeys) {
-      if (sessionsByKey.has(k)) {
-        resolvedSessions.push({ key: k, session: sessionsByKey.get(k) });
-      } else {
-        // Try matching by name (part after "::")
-        const name = k.includes("::") ? k.split("::").slice(1).join("::") : k;
-        const s = sessionsByName.get(name);
-        if (s) {
-          resolvedSessions.push({ key: sessionKey(s.name, s.machineHost), session: s });
-        }
-      }
-    }
-    // Self-heal: update stored keys if they changed (e.g. machineHost changed)
-    const resolvedKeys = resolvedSessions.map(({ key }) => key);
-    if (resolvedKeys.length !== storedKeys.length || JSON.stringify(resolvedKeys) !== JSON.stringify(storedKeys)) {
-      groupData.groups[groupName] = resolvedKeys;
-      needsGroupSave = true;
-    }
-    if (resolvedSessions.length === 0) continue;
-    resolvedSessions.forEach(({ key }) => groupedKeys.add(key));
-
-    const isCollapsed = groupData.collapsed[groupName] || false;
+  for (const group of resolved.groups) {
+    const isCollapsed = group.collapsed;
+    const isEmpty = group.sessions.length === 0;
     html.push(`
-      <div class="session-group" data-group="${esc(groupName)}">
-        <div class="session-group-header" data-group="${esc(groupName)}">
+      <div class="session-group${isEmpty ? " empty" : ""}" data-group="${esc(group.name)}">
+        <div class="session-group-header" data-group="${esc(group.name)}">
+          <span class="drag-handle group-drag-handle" data-drag-handle="group" role="button" aria-label="Drag to reorder group" title="Drag to reorder group">&#10495;</span>
           <span class="group-chevron${isCollapsed ? " collapsed" : ""}">&#9662;</span>
-          <span class="group-name">${esc(groupName)}</span>
-          <span class="group-count">${resolvedSessions.length}</span>
+          <span class="group-name">${esc(group.name)}</span>
+          <span class="group-count">${group.sessions.length}</span>
         </div>
         ${isCollapsed ? "" : `<div class="session-group-body">
-          ${resolvedSessions.map(({ session }) => renderSessionCard(session, showMachineLabel)).join("")}
+          ${group.sessions.map((session) => renderSessionCard(session, showMachineLabel)).join("")}
         </div>`}
       </div>`);
   }
 
-  // Persist self-healed group data (stale keys pruned, machineHost corrections)
-  if (needsGroupSave) saveGroups(groupData);
-
-  // Render ungrouped sessions
-  const ungrouped = filtered.filter((s) => !groupedKeys.has(sessionKey(s.name, s.machineHost)));
-  html.push(...ungrouped.map((s) => renderSessionCard(s, showMachineLabel)));
+  // Render ungrouped sessions in manual order.
+  html.push(...resolved.ungrouped.map((s) => renderSessionCard(s, showMachineLabel)));
 
   container.innerHTML = html.join("");
 
-  // Bind group header toggle
+  bindSessionListInteractions(container);
+}
+
+// --- Sidebar drag & drop (Pointer Events: one path for mouse + touch) ---
+const DRAG_THRESHOLD = 6;
+const AUTOSCROLL_EDGE = 56;
+let drag = null;
+let dropIndicator = null;
+let lastDragEndAt = 0;
+let autoScrollRaf = 0;
+
+function bindSessionListInteractions(container) {
   container.querySelectorAll(".session-group-header").forEach((header) => {
-    header.addEventListener("click", () => {
+    header.addEventListener("click", (e) => {
+      if (e.target.closest("[data-drag-handle]")) return;
       toggleGroupCollapsed(header.dataset.group);
-      state.renderedSessionsSignature = ""; // force re-render
+      state.renderedSessionsSignature = "";
       renderSessions();
     });
-    // Right-click / long-press on group header for group actions
     header.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       showGroupContextMenu(e, header.dataset.group);
     });
     let pressTimer;
     header.addEventListener("touchstart", (e) => {
+      if (e.target.closest("[data-drag-handle]")) return;
       pressTimer = setTimeout(() => {
         e.preventDefault();
         showGroupContextMenu(e, header.dataset.group);
@@ -627,21 +618,15 @@ function renderSessions() {
     header.addEventListener("touchmove", () => clearTimeout(pressTimer));
   });
 
-  // Bind session card events
   container.querySelectorAll(".session-card").forEach((card) => {
-    card.addEventListener("click", () => {
-      openTerminal(card.dataset.name, card.dataset.machineHost);
-    });
-
-    // Right-click context menu
+    card.addEventListener("click", () => openTerminal(card.dataset.name, card.dataset.machineHost));
     card.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       showSessionContextMenu(e, card.dataset.name, card.dataset.machineHost);
     });
-
-    // Long-press context menu (replaces old long-press-to-delete)
     let pressTimer;
     card.addEventListener("touchstart", (e) => {
+      if (e.target.closest("[data-drag-handle]")) return;
       pressTimer = setTimeout(() => {
         e.preventDefault();
         showSessionContextMenu(e, card.dataset.name, card.dataset.machineHost);
@@ -650,6 +635,196 @@ function renderSessions() {
     card.addEventListener("touchend", () => clearTimeout(pressTimer));
     card.addEventListener("touchmove", () => clearTimeout(pressTimer));
   });
+
+  container.querySelectorAll("[data-drag-handle]").forEach((handle) => {
+    handle.addEventListener("pointerdown", onHandlePointerDown);
+  });
+
+  // Swallow the click that follows a drag so it doesn't open the terminal.
+  if (!container.dataset.dragGuardBound) {
+    container.dataset.dragGuardBound = "1";
+    container.addEventListener(
+      "click",
+      (e) => {
+        if (Date.now() - lastDragEndAt < 350) {
+          e.stopPropagation();
+          e.preventDefault();
+        }
+      },
+      true,
+    );
+  }
+}
+
+function onHandlePointerDown(e) {
+  const handle = e.currentTarget;
+  const kind = handle.dataset.dragHandle;
+  const el = kind === "group" ? handle.closest(".session-group") : handle.closest(".session-card");
+  if (!el) return;
+  e.preventDefault();
+  try {
+    handle.setPointerCapture(e.pointerId);
+  } catch {
+    /* capture is best-effort */
+  }
+
+  let group = null;
+  let sourceIndex = 0;
+  if (kind === "session") {
+    const grpEl = el.closest(".session-group");
+    group = grpEl ? grpEl.dataset.group : null;
+    sourceIndex = [...el.parentElement.children]
+      .filter((c) => c.classList.contains("session-card"))
+      .indexOf(el);
+  } else {
+    sourceIndex = [...$("#sessions-container").querySelectorAll(".session-group")].indexOf(el);
+  }
+
+  drag = {
+    kind,
+    el,
+    key: el.dataset.sessionKey || null,
+    groupName: kind === "group" ? el.dataset.group : null,
+    group,
+    sourceIndex,
+    startX: e.clientX,
+    startY: e.clientY,
+    lastX: e.clientX,
+    lastY: e.clientY,
+    started: false,
+    drop: null,
+  };
+
+  window.addEventListener("pointermove", onDragMove, { passive: false });
+  window.addEventListener("pointerup", onDragEnd);
+  window.addEventListener("pointercancel", onDragEnd);
+}
+
+function onDragMove(e) {
+  if (!drag) return;
+  drag.lastX = e.clientX;
+  drag.lastY = e.clientY;
+  if (!drag.started) {
+    if (Math.hypot(e.clientX - drag.startX, e.clientY - drag.startY) < DRAG_THRESHOLD) return;
+    drag.started = true;
+    drag.el.classList.add("dragging");
+    document.body.classList.add("drag-active");
+    autoScrollRaf = requestAnimationFrame(autoScrollStep);
+  }
+  e.preventDefault();
+  drag.drop = computeDrop(e.clientX, e.clientY);
+  placeIndicator(drag.drop);
+}
+
+function computeDrop(x, y) {
+  const container = $("#sessions-container");
+  const under = document.elementFromPoint(x, y);
+  const closest = (sel) => (under && under.closest ? under.closest(sel) : null);
+
+  if (drag.kind === "group") {
+    const groupEl = closest(".session-group");
+    const groups = [...container.querySelectorAll(".session-group")];
+    if (groupEl && groupEl !== drag.el) {
+      const idx = groups.indexOf(groupEl);
+      const before = y <= groupEl.getBoundingClientRect().top + groupEl.getBoundingClientRect().height / 2;
+      return { kind: "group", index: before ? idx : idx + 1, ref: groupEl, where: before ? "before" : "after" };
+    }
+    return { kind: "group", index: groups.length, ref: container, where: "append" };
+  }
+
+  const card = closest(".session-card");
+  if (card && card !== drag.el && !card.classList.contains("dragging")) {
+    const cards = [...card.parentElement.children].filter((c) => c.classList.contains("session-card"));
+    let idx = cards.indexOf(card);
+    const rect = card.getBoundingClientRect();
+    const before = y <= rect.top + rect.height / 2;
+    if (!before) idx += 1;
+    const grpEl = card.closest(".session-group");
+    return { kind: "session", target: grpEl ? grpEl.dataset.group : null, index: idx, ref: card, where: before ? "before" : "after" };
+  }
+
+  const header = closest(".session-group-header");
+  if (header) {
+    const grpEl = header.closest(".session-group");
+    const body = grpEl.querySelector(".session-group-body");
+    return { kind: "session", target: grpEl.dataset.group, index: Infinity, ref: body || grpEl, where: "append" };
+  }
+
+  const body = closest(".session-group-body");
+  if (body) {
+    const grpEl = body.closest(".session-group");
+    return { kind: "session", target: grpEl.dataset.group, index: Infinity, ref: body, where: "append" };
+  }
+
+  const groupEl = closest(".session-group");
+  if (groupEl) {
+    return { kind: "session", target: groupEl.dataset.group, index: Infinity, ref: groupEl, where: "append" };
+  }
+
+  return { kind: "session", target: null, index: Infinity, ref: container, where: "append" };
+}
+
+function placeIndicator(drop) {
+  if (!dropIndicator) {
+    dropIndicator = document.createElement("div");
+    dropIndicator.className = "drop-indicator";
+  }
+  const ind = dropIndicator;
+  if (!drop.ref) {
+    $("#sessions-container").appendChild(ind);
+  } else if (drop.where === "append") {
+    drop.ref.appendChild(ind);
+  } else if (drop.where === "before") {
+    drop.ref.parentElement.insertBefore(ind, drop.ref);
+  } else {
+    drop.ref.parentElement.insertBefore(ind, drop.ref.nextSibling);
+  }
+}
+
+function autoScrollStep() {
+  if (!drag || !drag.started) return;
+  const container = $("#sessions-container");
+  const rect = container.getBoundingClientRect();
+  if (drag.lastY < rect.top + AUTOSCROLL_EDGE) container.scrollTop -= 14;
+  else if (drag.lastY > rect.bottom - AUTOSCROLL_EDGE) container.scrollTop += 14;
+  autoScrollRaf = requestAnimationFrame(autoScrollStep);
+}
+
+function onDragEnd() {
+  window.removeEventListener("pointermove", onDragMove);
+  window.removeEventListener("pointerup", onDragEnd);
+  window.removeEventListener("pointercancel", onDragEnd);
+  if (autoScrollRaf) {
+    cancelAnimationFrame(autoScrollRaf);
+    autoScrollRaf = 0;
+  }
+
+  const d = drag;
+  drag = null;
+  if (dropIndicator) {
+    dropIndicator.remove();
+    dropIndicator = null;
+  }
+  document.body.classList.remove("drag-active");
+  if (!d) return;
+  d.el.classList.remove("dragging");
+  if (!d.started || !d.drop) return;
+  lastDragEndAt = Date.now();
+
+  const gd = getGroups();
+  let next;
+  if (d.kind === "group") {
+    next = moveGroup(gd, d.groupName, d.drop.index);
+  } else {
+    let index = d.drop.index;
+    // Same list: the dragged item is removed before re-insertion, so shift
+    // the target index down when moving toward the end.
+    if (d.drop.target === d.group && Number.isInteger(index) && d.sourceIndex < index) index -= 1;
+    next = moveSession(gd, d.key, d.drop.target, index);
+  }
+  saveGroups(next);
+  state.renderedSessionsSignature = "";
+  renderSessions();
 }
 
 function renderPeerStatus() {
