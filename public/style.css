@@ -372,6 +372,53 @@ html, body {
   margin-left: 12px;
 }
 
+/* --- Sidebar drag & drop --- */
+.drag-handle {
+  flex-shrink: 0;
+  width: 18px;
+  margin-left: -6px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 14px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  opacity: 0.25;
+  transition: opacity 0.15s;
+}
+
+.session-card:hover .drag-handle,
+.session-group-header:hover .drag-handle,
+body.drag-active .drag-handle {
+  opacity: 1;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.session-card.dragging {
+  opacity: 0.4;
+}
+
+.drop-indicator {
+  height: 2px;
+  margin: 2px 0;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+body.drag-active .session-group-header {
+  outline: 1px dashed rgba(99, 102, 241, 0.6);
+  outline-offset: -1px;
+}
+
+.session-group.empty .session-group-header {
+  opacity: 0.6;
+}
+
 /* --- Context Menu --- */
 .context-menu {
   position: fixed;
