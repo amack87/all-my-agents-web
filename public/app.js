@@ -312,6 +312,17 @@ function removeFromGroup(sKey) {
   saveGroups(data);
 }
 
+// Move every member to the bottom of the ungrouped region, keeping the
+// (now empty) group so its header stays droppable.
+function ungroupAll(groupName) {
+  const data = loadGroups();
+  const members = data.groups[groupName] || [];
+  data.groups[groupName] = [];
+  const existing = new Set(data.ungroupedOrder || []);
+  data.ungroupedOrder = [...(data.ungroupedOrder || []), ...members.filter((k) => !existing.has(k))];
+  saveGroups(data);
+}
+
 function toggleGroupCollapsed(groupName) {
   const data = loadGroups();
   data.collapsed[groupName] = !data.collapsed[groupName];
@@ -814,7 +825,11 @@ function onDragEnd() {
   const gd = getGroups();
   let next;
   if (d.kind === "group") {
-    next = moveGroup(gd, d.groupName, d.drop.index);
+    let index = d.drop.index;
+    // Same list: the dragged group is removed before re-insertion, so shift
+    // the target index down when moving toward the end.
+    if (Number.isInteger(index) && d.sourceIndex < index) index -= 1;
+    next = moveGroup(gd, d.groupName, index);
   } else {
     let index = d.drop.index;
     // Same list: the dragged item is removed before re-insertion, so shift
@@ -1178,7 +1193,16 @@ function openTerminal(sessionName, machineHost = "local") {
   let scrollAccum = 0;
   const SCROLL_SENSITIVITY = 120;
 
-  container.addEventListener("wheel", (e) => {
+  // #terminal-container outlives each terminal, so every listener bound here must
+  // be recorded and unbound by cleanupTerminal() — otherwise each session switch
+  // stacks another wheel handler and one notch scrolls N times.
+  state._containerListeners = [];
+  const bindContainer = (type, listener, opts) => {
+    container.addEventListener(type, listener, opts);
+    state._containerListeners.push([type, listener, opts]);
+  };
+
+  bindContainer("wheel", (e) => {
     if (e.deltaY === 0) return;
     e.preventDefault();
     e.stopPropagation();
@@ -1204,7 +1228,7 @@ function openTerminal(sessionName, machineHost = "local") {
     let twoFingerMoved = false;
     const SCROLL_THRESHOLD = 20; // pixels per scroll step
 
-    container.addEventListener("touchstart", (e) => {
+    bindContainer("touchstart", (e) => {
       if (e.touches.length === 2) {
         touchStartY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
         touchAccum = 0;
@@ -1212,7 +1236,7 @@ function openTerminal(sessionName, machineHost = "local") {
       }
     }, { passive: true });
 
-    container.addEventListener("touchmove", (e) => {
+    bindContainer("touchmove", (e) => {
       if (e.touches.length !== 2) return;
       const ws = state.ws;
       if (!ws || ws.readyState !== 1) return;
@@ -1251,7 +1275,7 @@ function openTerminal(sessionName, machineHost = "local") {
       }
     }, { passive: false });
 
-    container.addEventListener("touchend", (e) => {
+    bindContainer("touchend", (e) => {
       // Exit copy mode on 2-finger tap (no movement). Only relevant on main screen.
       if (state.inCopyMode && !twoFingerMoved && e.touches.length === 0) {
         const ws = state.ws;
@@ -1499,6 +1523,13 @@ function cleanupTerminal() {
   if (state._resizeHandler) {
     window.removeEventListener("resize", state._resizeHandler);
     state._resizeHandler = null;
+  }
+  if (state._containerListeners) {
+    const container = $("#terminal-container");
+    for (const [type, listener, opts] of state._containerListeners) {
+      container.removeEventListener(type, listener, opts);
+    }
+    state._containerListeners = null;
   }
 }
 
@@ -1906,9 +1937,7 @@ function showGroupContextMenu(e, groupName) {
           renameGroup(groupName, newName.trim());
         }
       } else if (action === "ungroup") {
-        const data = loadGroups();
-        // Remove all members but keep nothing
-        deleteGroup(groupName);
+        ungroupAll(groupName);
       } else if (action === "delete") {
         deleteGroup(groupName);
       }
