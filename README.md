@@ -93,6 +93,26 @@ cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents.plist
 launchctl load ~/Library/LaunchAgents/com.allmyagents.plist
 ```
 
+### Agent status adapter (opencode)
+
+Instead of only scraping the screen, opencode can report its own lifecycle
+(working / needs-input / idle) to the server as canonical status events. Copy
+the adapter into opencode's plugin directory and restart opencode:
+
+```bash
+mkdir -p ~/.config/opencode/plugin
+cp integrations/opencode/ama-status.js ~/.config/opencode/plugin/
+```
+
+Newer opencode builds read `~/.config/opencode/plugins/`; a project-local
+`.opencode/plugin/` copy works the same way. The adapter is standalone and
+fails open — if the server is down, opencode is unaffected and the server
+falls back to screen detection.
+
+It posts to the local server (`ALL_MY_AGENTS_PORT`, default `3456`). To point
+it elsewhere, set `ALL_MY_AGENTS_URL` (e.g. `http://100.x.x.x:3456`) in the
+environment opencode runs in.
+
 ## Configuration
 
 | Variable | Default | Description |
