@@ -206,6 +206,10 @@ html, body {
   background: var(--gray); /* overridden by inline style when activity data available */
 }
 
+.status-dot.ended {
+  background: var(--red);
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
@@ -292,6 +296,11 @@ html, body {
 .session-status-label.idle {
   background: rgba(102, 102, 102, 0.15);
   color: var(--gray);
+}
+
+.session-status-label.ended {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--red);
 }
 
 .session-delete-btn {

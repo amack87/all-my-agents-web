@@ -200,7 +200,7 @@ export async function fetchPeerSessions(peer, timeoutMs = 10000) {
     const url = `http://${peer.host}:${peer.port || DEFAULT_PORT}/api/sessions`;
     const res = await fetch(url, { signal: controller.signal });
     const sessions = await res.json();
-    const VALID_STATUSES = new Set(["needsInput", "working", "idle", "unknown"]);
+    const VALID_STATUSES = new Set(["needsInput", "working", "idle", "ended", "unknown"]);
     return {
       peer,
       sessions: sessions.map((s) => ({
@@ -256,11 +256,11 @@ export async function fetchAllMeshSessions(localSessions, config) {
     }
   }
 
-  // Sort: needsInput first, then working, then idle/unknown — by most recent activity within group
-  const priority = { needsInput: 0, working: 1, idle: 2, unknown: 3 };
+  // Sort: needsInput first, then working, then idle, then ended, then unknown — by most recent activity within group
+  const priority = { needsInput: 0, working: 1, idle: 2, ended: 3, unknown: 4 };
   const sorted = [...allSessions].sort((a, b) => {
-    const pa = priority[a.status] ?? 3;
-    const pb = priority[b.status] ?? 3;
+    const pa = priority[a.status] ?? 4;
+    const pb = priority[b.status] ?? 4;
     if (pa !== pb) return pa - pb;
     return (b.lastActivity || 0) - (a.lastActivity || 0);
   });
