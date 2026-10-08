@@ -113,6 +113,41 @@ It posts to the local server (`ALL_MY_AGENTS_PORT`, default `3456`). To point
 it elsewhere, set `ALL_MY_AGENTS_URL` (e.g. `http://100.x.x.x:3456`) in the
 environment opencode runs in.
 
+### Agent status adapter (Claude Code)
+
+opencode identifies itself by its registry session id. Claude Code has no such
+id, so the server mints a **surface token** when it launches a pane and exports
+it into the pane environment as `AMA_SURFACE_TOKEN`. Claude's hooks run inside
+that pane, inherit the token, and POST canonical events that carry it — so the
+status still arrives as an event rather than a screen-scrape.
+
+Install by merging the `hooks` block from
+`integrations/claude/settings.example.json` into `~/.claude/settings.json` (or a
+project `.claude/settings.json`), changing each command path to the absolute
+path of `integrations/claude/ama-status-hook.js`:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      { "hooks": [{ "type": "command",
+        "command": "node /path/to/all-my-agents-web/integrations/claude/ama-status-hook.js" }] }
+    ]
+  }
+}
+```
+
+The example covers `SessionStart`, `UserPromptSubmit`, `PreToolUse`,
+`PostToolUse`, `Notification`, `Stop`, and `SessionEnd`. A `PreToolUse` on
+`AskUserQuestion` or `ExitPlanMode` is reported as `needsInput` (Claude is
+waiting on you); other tools report as activity. The hook fails open — with no
+token, or with the server down, Claude is completely unaffected and the server
+falls back to screen detection.
+
+Surface tokens only exist for panes AMA launches itself (via the New Session
+button or session restore). A Claude Code pane started by hand has no token and
+keeps using screen detection.
+
 ## Configuration
 
 | Variable | Default | Description |
