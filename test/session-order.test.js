@@ -93,6 +93,14 @@ test("moveGroup clamps an out-of-range index", () => {
   assert.deepEqual(moveGroup(input, "A", 99).order, ["B", "A"]);
 });
 
+test("moveGroup inserts at the post-removal index (callers pre-shift rendered indices)", () => {
+  // Dragging A below C renders at index 3 in [A,B,C,D]; the caller shifts
+  // 3 -> 2 because A is removed first, landing A between C and D.
+  const input = data({ groups: { A: [], B: [], C: [], D: [] }, order: ["A", "B", "C", "D"] });
+  assert.deepEqual(moveGroup(input, "A", 2).order, ["B", "C", "A", "D"]);
+  assert.deepEqual(moveGroup(input, "D", 1).order, ["A", "D", "B", "C"]);
+});
+
 test("resolveOrder seeds unseen keys at the top of the ungrouped region", () => {
   const input = data({ ungroupedOrder: ["local::old"] });
   const out = resolveOrder(input, [sess("new1"), sess("old")], (s) => s.key);
