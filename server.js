@@ -224,6 +224,50 @@ function saveRegistry(registry) {
   renameSync(tmp, REGISTRY_PATH);
 }
 
+// --- Sidebar groups (local-first sync) ---
+// The web UI and the macOS app each keep their own local copy of the sidebar
+// group/order state and opportunistically sync it here so the two surfaces
+// converge. Clients stay usable offline; this server copy is just the meeting
+// point. Last write wins by `updatedAt` (ms epoch).
+const SIDEBAR_GROUPS_PATH = join(LOG_DIR, "sidebar-groups.json");
+
+function loadSidebarGroups() {
+  try {
+    const parsed = JSON.parse(readFileSync(SIDEBAR_GROUPS_PATH, "utf8"));
+    return parsed && parsed.data && typeof parsed.data === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveSidebarGroups(entry) {
+  const tmp = `${SIDEBAR_GROUPS_PATH}.tmp`;
+  writeFileSync(tmp, JSON.stringify(entry, null, 2), "utf8");
+  renameSync(tmp, SIDEBAR_GROUPS_PATH);
+}
+
+function sanitizeSidebarOrder(data) {
+  const src = data && typeof data === "object" ? data : {};
+  const groups = {};
+  if (src.groups && typeof src.groups === "object") {
+    for (const [name, members] of Object.entries(src.groups)) {
+      if (Array.isArray(members)) groups[name] = members.filter((k) => typeof k === "string");
+    }
+  }
+  const collapsed = {};
+  if (src.collapsed && typeof src.collapsed === "object") {
+    for (const [name, value] of Object.entries(src.collapsed)) collapsed[name] = !!value;
+  }
+  return {
+    groups,
+    collapsed,
+    order: Array.isArray(src.order) ? src.order.filter((n) => typeof n === "string") : [],
+    ungroupedOrder: Array.isArray(src.ungroupedOrder)
+      ? src.ungroupedOrder.filter((k) => typeof k === "string")
+      : [],
+  };
+}
+
 // --- Event-derived status ---------------------------------------------------
 // Adapters POST canonical lifecycle events (see agent-events.js). The reducer's
 // output is stored per session — keyed by tmux session name (registry
@@ -459,6 +503,25 @@ async function runStartupRestore() {
 
 app.get("/api/registry", (_req, res) => {
   res.json(registryCache.registry || { version: REGISTRY_VERSION, updatedAt: null, sessions: [] });
+});
+
+// Sidebar group/order sync (local-first; clients keep their own copy too)
+app.get("/api/sidebar-groups", (_req, res) => {
+  res.json(loadSidebarGroups() || { data: null, updatedAt: 0 });
+});
+
+app.post("/api/sidebar-groups", (req, res) => {
+  const body = req.body;
+  if (!body || typeof body !== "object" || !body.data || typeof body.data !== "object") {
+    return res.status(400).json({ error: "Invalid sidebar groups payload" });
+  }
+  const updatedAt = Number.isFinite(body.updatedAt) ? body.updatedAt : 0;
+  const incoming = { data: sanitizeSidebarOrder(body.data), updatedAt };
+  const existing = loadSidebarGroups();
+  // Last write wins: never let an older push clobber a newer stored copy.
+  const winner = existing && Number(existing.updatedAt) > updatedAt ? existing : incoming;
+  if (winner === incoming) saveSidebarGroups(incoming);
+  res.json(winner);
 });
 
 // Rename a tmux session
