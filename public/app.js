@@ -6,6 +6,7 @@ import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicod
 
 // --- Sidebar ordering (pure, DOM-free) ---
 import { moveSession, moveGroup, resolveOrder } from "./session-order.js";
+import { pickWinner } from "./sidebar-sync.js";
 
 // --- Theme Helpers ---
 function getTerminalTheme() {
@@ -24,7 +25,9 @@ const APP_STORAGE_KEYS = [
   HOSTS_STORAGE_KEY,
   ACTIVE_HOST_KEY,
   "allmyagents-session-groups",
+  "allmyagents-session-groups-updated-at",
   "allmyagents-zoom",
+  "allmyagents-sidebar-width",
 ];
 
 // Base URL for all API calls. Empty string = same origin (default).
@@ -232,8 +235,9 @@ const state = {
   inCopyMode: false,
 };
 
-// --- Session Groups (localStorage-backed) ---
+// --- Session Groups (localStorage-backed, synced via the server) ---
 const GROUPS_STORAGE_KEY = "allmyagents-session-groups";
+const GROUPS_UPDATED_AT_KEY = "allmyagents-session-groups-updated-at";
 
 function loadGroups() {
   const fallback = { groups: {}, collapsed: {}, order: [], ungroupedOrder: [] };
@@ -249,8 +253,21 @@ function loadGroups() {
   };
 }
 
-function saveGroups(data) {
+// Write the local copy without re-stamping it. Used when adopting the server's
+// copy, which must not look like a fresh local edit or get pushed straight back.
+function persistGroupsLocal(data, updatedAt) {
   setStoredValue(GROUPS_STORAGE_KEY, JSON.stringify(data));
+  if (Number.isFinite(updatedAt)) setStoredValue(GROUPS_UPDATED_AT_KEY, String(updatedAt));
+}
+
+function loadGroupsEntry() {
+  const stored = Number(getStoredString(GROUPS_UPDATED_AT_KEY));
+  return { data: loadGroups(), updatedAt: Number.isFinite(stored) ? stored : 0 };
+}
+
+function saveGroups(data) {
+  persistGroupsLocal(data, Date.now());
+  scheduleGroupsPush();
 }
 
 function getGroups() {
@@ -337,6 +354,46 @@ function getSessionGroup(sKey) {
   return null;
 }
 
+// --- Sidebar group sync (local-first) ---
+// The local copy stays authoritative for this browser; the server copy lets the
+// macOS app (and other browsers) converge. Writes always land locally first and
+// pushes are best-effort, so the UI never blocks on the server.
+let groupsPushTimer = null;
+
+function scheduleGroupsPush() {
+  if (groupsPushTimer) clearTimeout(groupsPushTimer);
+  groupsPushTimer = setTimeout(() => {
+    groupsPushTimer = null;
+    pushGroupsEntry(loadGroupsEntry());
+  }, 800);
+}
+
+async function pushGroupsEntry(entry) {
+  try {
+    applyGroupsWinner(await api.postSidebarGroups(entry));
+  } catch { /* offline: the local copy stands */ }
+}
+
+function applyGroupsWinner(winner) {
+  if (!winner || !winner.data) return;
+  if (pickWinner(loadGroupsEntry(), winner) !== "remote") return;
+  persistGroupsLocal(winner.data, winner.updatedAt);
+  state.renderedSessionsSignature = "";
+  renderSessions();
+}
+
+async function syncGroups() {
+  let remote;
+  try {
+    remote = await api.getSidebarGroups();
+  } catch {
+    return; // offline: keep using the local copy
+  }
+  const winner = pickWinner(loadGroupsEntry(), remote);
+  if (winner === "remote") applyGroupsWinner(remote);
+  else if (winner === "local") pushGroupsEntry(loadGroupsEntry());
+}
+
 // --- API ---
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -415,6 +472,16 @@ const api = {
   },
   async getIdentity() {
     return fetchJson(apiUrl("/api/identity"), {}, { timeoutMs: 4000, retries: 1 });
+  },
+  async getSidebarGroups() {
+    return fetchJson(apiUrl("/api/sidebar-groups"), {}, { timeoutMs: 4000, retries: 0 });
+  },
+  async postSidebarGroups(entry) {
+    return fetchJson(apiUrl("/api/sidebar-groups"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(entry),
+    }, { timeoutMs: 4000, retries: 0 });
   },
 };
 
@@ -2107,6 +2174,81 @@ function applyZoom() {
     state.terminal.options.fontSize = termFontSize;
     state.fitAddon?.fit();
   }
+  applySidebarWidth();
+}
+
+// --- Sidebar resize ---
+const SIDEBAR_WIDTH_KEY = "allmyagents-sidebar-width";
+const SIDEBAR_MIN_PX = 240;
+let sidebarWidth = parseFloat(getStoredString(SIDEBAR_WIDTH_KEY)) || 340;
+
+// Narrowest width at which the top bar's content (title + actions) still fits.
+function sidebarContentMin() {
+  const bar = $("#session-list-view .top-bar");
+  const sidebar = $("#session-list-view");
+  if (!bar || !sidebar) return SIDEBAR_MIN_PX;
+  const cs = getComputedStyle(bar);
+  const pad = parseFloat(cs.paddingLeft) + parseFloat(cs.paddingRight);
+  const gap = parseFloat(cs.columnGap) || 0;
+  let needed = pad + gap * (bar.children.length - 1);
+  for (const child of bar.children) needed += child.getBoundingClientRect().width;
+  const border = sidebar.offsetWidth - sidebar.clientWidth;
+  return Math.ceil(needed + border);
+}
+
+function clampSidebarWidth(w) {
+  const floor = Math.max(SIDEBAR_MIN_PX * ZOOM_STEPS[zoomIndex], sidebarContentMin());
+  const ceil = Math.max(floor, window.innerWidth * 0.7);
+  return Math.min(Math.max(w, floor), ceil);
+}
+
+function applySidebarWidth() {
+  if (!isDesktop()) return;
+  const el = $("#session-list-view");
+  // Measure the top bar at its natural size, not squeezed by the current width.
+  el.style.setProperty("--sidebar-width", "0px");
+  const w = clampSidebarWidth(sidebarWidth);
+  el.style.setProperty("--sidebar-width", `${w}px`);
+  window.dispatchEvent(new Event("resize"));
+}
+
+function initSidebarResizer() {
+  const handle = $("#sidebar-resizer");
+  if (!handle) return;
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    handle.setPointerCapture(e.pointerId);
+    handle.classList.add("dragging");
+    document.body.classList.add("sidebar-resizing");
+    const left = $("#session-list-view").getBoundingClientRect().left;
+    const onMove = (ev) => {
+      sidebarWidth = clampSidebarWidth(ev.clientX - left);
+      $("#session-list-view").style.setProperty("--sidebar-width", `${sidebarWidth}px`);
+      window.dispatchEvent(new Event("resize"));
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      handle.classList.remove("dragging");
+      document.body.classList.remove("sidebar-resizing");
+      setStoredValue(SIDEBAR_WIDTH_KEY, Math.round(sidebarWidth));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  });
+  handle.addEventListener("dblclick", () => {
+    sidebarWidth = 340;
+    removeStoredValue(SIDEBAR_WIDTH_KEY);
+    applySidebarWidth();
+  });
+  window.addEventListener("resize", () => {
+    // Re-clamp on window resize; skip our own synthetic events cheaply.
+    const el = $("#session-list-view");
+    const cur = parseFloat(el.style.getPropertyValue("--sidebar-width"));
+    if (isDesktop() && cur < sidebarContentMin() - 0.5) applySidebarWidth();
+  });
 }
 
 function zoomUp() {
@@ -2164,6 +2306,7 @@ async function init() {
   } catch { /* font API may not be available */ }
 
   // Apply saved zoom level
+  initSidebarResizer();
   applyZoom();
 
   // Discover best available host (failover if current is down)
@@ -2173,6 +2316,7 @@ async function init() {
     state.identity = await api.getIdentity();
   } catch { /* standalone mode */ }
   await loadSessions();
+  syncGroups();
 
   // On desktop, show placeholder in terminal panel
   if (isDesktop()) {

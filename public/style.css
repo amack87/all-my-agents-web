@@ -119,9 +119,11 @@ html, body {
   border-bottom: 1px solid var(--border);
   min-height: 52px;
   flex-shrink: 0;
+  gap: 8px;
 }
 
 .top-bar h1 {
+  white-space: nowrap;
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.5px;
@@ -129,6 +131,8 @@ html, body {
 
 .header-actions {
   display: flex;
+  align-items: center;
+  flex-shrink: 0;
   gap: 8px;
   position: relative;
 }
@@ -1040,9 +1044,8 @@ body.drag-active .session-group-header {
 
   #session-list-view {
     position: static;
-    width: 340px;
-    min-width: 280px;
-    max-width: 400px;
+    width: var(--sidebar-width, 340px);
+    min-width: 0;
     opacity: 1;
     pointer-events: auto;
     transform: none;
@@ -1050,8 +1053,30 @@ body.drag-active .session-group-header {
     flex-shrink: 0;
   }
 
+  #sidebar-resizer {
+    flex: 0 0 6px;
+    margin-left: -3px;
+    margin-right: -3px;
+    z-index: 5;
+    cursor: col-resize;
+    touch-action: none;
+    background: transparent;
+    transition: background 0.15s;
+  }
+
+  #sidebar-resizer:hover,
+  #sidebar-resizer.dragging {
+    background: var(--border);
+  }
+
+  body.sidebar-resizing {
+    cursor: col-resize;
+    user-select: none;
+  }
+
   #terminal-view {
     position: static;
+    min-width: 0;
     flex: 1;
     opacity: 1;
     pointer-events: auto;
