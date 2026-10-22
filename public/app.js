@@ -1104,8 +1104,18 @@ function isAgentSession(s) {
   return s.agent && s.agent !== "shell";
 }
 
+// Agent sessions in sidebar render order (groups first, then ungrouped),
+// skipping sessions inside collapsed groups — matching what's visible in the nav.
+function sidebarNavSessions() {
+  const resolved = resolveOrder(getGroups(), state.sessions, (s) => sessionKey(s.name, s.machineHost));
+  const ordered = resolved.groups
+    .flatMap((g) => (g.collapsed ? [] : g.sessions))
+    .concat(resolved.ungrouped);
+  return ordered.filter((s) => s.paneId && isAgentSession(s));
+}
+
 function navigateNextSession() {
-  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
+  const sessions = sidebarNavSessions();
   if (sessions.length === 0) return;
 
   const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
@@ -1115,7 +1125,7 @@ function navigateNextSession() {
 }
 
 function navigatePrevSession() {
-  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
+  const sessions = sidebarNavSessions();
   if (sessions.length === 0) return;
 
   const currentIdx = sessions.findIndex((s) => isActiveSession(s.name, s.machineHost));
@@ -1125,7 +1135,7 @@ function navigatePrevSession() {
 }
 
 function updatePositionIndicator() {
-  const sessions = state.sessions.filter((s) => s.paneId && isAgentSession(s));
+  const sessions = sidebarNavSessions();
   const el = $("#terminal-position");
   if (!el || sessions.length <= 1) {
     if (el) el.textContent = "";
@@ -1185,6 +1195,17 @@ function openTerminal(sessionName, machineHost = "local") {
   let rightShiftDown = false;
 
   term.attachCustomKeyEventHandler((event) => {
+    // Cmd+Up / Cmd+Down move through sessions in sidebar order.
+    if (event.metaKey && event.type === "keydown"
+        && (event.key === "ArrowUp" || event.key === "ArrowDown")) {
+      event.preventDefault();
+      if (event.key === "ArrowUp") {
+        navigatePrevSession();
+      } else {
+        navigateNextSession();
+      }
+      return false;
+    }
     if (event.key === "Shift" && event.location === 2 /* DOM_KEY_LOCATION_RIGHT */) {
       if (event.type === "keydown" && !rightShiftDown) {
         rightShiftDown = true;
