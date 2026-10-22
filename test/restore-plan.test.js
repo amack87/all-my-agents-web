@@ -119,3 +119,53 @@ test("a shell entry is never resumed even when it carries a session id", () => {
     { kind: "recreate-shell", name: "stale", dir: "/repos/x", agent: "shell", reason: "recreate-shell" },
   ]);
 });
+
+const CLAUDE_ID = "0d78b2d1-52d2-47c9-9de2-0e7e21622269";
+
+function claudeRegistry(entry = {}) {
+  return {
+    version: 2,
+    updatedAt: "x",
+    sessions: [
+      { tmux: "questions", dir: "/Users/andy/Repos", sessionId: CLAUDE_ID, agent: "Claude Code", firstSeen: "x", lastActive: "x", ...entry },
+    ],
+  };
+}
+
+test("resumes a Claude Code entry when its transcript resolves", () => {
+  const actions = buildRestorePlan({
+    registry: claudeRegistry(),
+    existingTmux: [],
+    resolvable: new Set([CLAUDE_ID]),
+  });
+
+  assert.deepEqual(actions, [
+    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: CLAUDE_ID, reason: "resume" },
+  ]);
+});
+
+test("degrades a Claude Code entry to a fresh claude when the transcript is gone", () => {
+  // `claude -c` is deliberately not used: two panes in the same dir would both
+  // continue the same "most recent" conversation.
+  const actions = buildRestorePlan({
+    registry: claudeRegistry(),
+    existingTmux: [],
+    resolvable: new Set(),
+  });
+
+  assert.deepEqual(actions, [
+    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: null, reason: "degrade" },
+  ]);
+});
+
+test("a Claude Code entry that never captured an id still launches claude", () => {
+  const actions = buildRestorePlan({
+    registry: claudeRegistry({ sessionId: null }),
+    existingTmux: [],
+    resolvable: new Set([CLAUDE_ID]),
+  });
+
+  assert.deepEqual(actions, [
+    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: null, reason: "degrade" },
+  ]);
+});

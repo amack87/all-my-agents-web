@@ -4,13 +4,14 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { readFile, readdir } from "node:fs/promises";
+import { access, readFile, readdir } from "node:fs/promises";
 import { accessSync, createWriteStream, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
 import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh.js";
 import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
 import { buildRestorePlan } from "./restore-plan.js";
+import { indexClaudeSessions, isClaudeSessionId } from "./claude-session-index.js";
 import { detectStatusFromScreen } from "./agent-status.js";
 import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
 import { newSurfaceToken, buildLaunchArgs } from "./surface-token.js";
@@ -205,6 +206,10 @@ const QUIET_MS = parseInt(process.env.ALL_MY_AGENTS_QUIET_MS || "6000", 10);
 const EVENT_TTL_MS = parseInt(process.env.ALL_MY_AGENTS_EVENT_TTL_MS || "120000", 10);
 // Not on launchd's PATH, so use the explicit binary (override via OPENCODE_BIN).
 const OPENCODE_BIN = process.env.OPENCODE_BIN || join(os.homedir(), ".opencode", "bin", "opencode");
+// Claude Code has the same PATH problem (override via CLAUDE_BIN).
+const CLAUDE_BIN = process.env.CLAUDE_BIN || join(os.homedir(), ".local", "bin", "claude");
+const CLAUDE_SESSIONS_DIR = process.env.CLAUDE_SESSIONS_DIR || join(os.homedir(), ".claude", "sessions");
+const CLAUDE_PROJECTS_DIR = process.env.CLAUDE_PROJECTS_DIR || join(os.homedir(), ".claude", "projects");
 
 let registryCache = { registry: null };
 
@@ -306,8 +311,27 @@ function broadcastStatus(payload) {
   }
 }
 
-// Best-effort discovery: every tmux pane hosting an opencode process. Never
-// throws — an empty set is just "nothing to record right now".
+// Pane id -> { pid, sessionId } for every live Claude Code process. A missing
+// directory is normal (Claude Code may never have run); a torn file is skipped.
+async function loadClaudeSessions() {
+  let names;
+  try {
+    names = await readdir(CLAUDE_SESSIONS_DIR);
+  } catch {
+    return new Map();
+  }
+  const records = [];
+  for (const name of names) {
+    if (!name.endsWith(".json")) continue; // <pid>.<hash>.key files live here too
+    try {
+      records.push(JSON.parse(await readFile(join(CLAUDE_SESSIONS_DIR, name), "utf8")));
+    } catch { /* torn or rotated */ }
+  }
+  return indexClaudeSessions(records);
+}
+
+// Best-effort discovery: every tmux pane, with a session id where the agent
+// exposes one. Never throws — an empty set is just "nothing to record now".
 async function discoverManagedSessions() {
   const SEP = "|||";
   let paneOutput = "";
@@ -319,6 +343,7 @@ async function discoverManagedSessions() {
   } catch {
     return [];
   }
+  const claudeSessions = await loadClaudeSessions();
   const out = [];
   for (const line of paneOutput.split("\n").filter(Boolean)) {
     const [name, paneId, panePidRaw, currentCmd, panePath] = line.split(SEP);
@@ -329,10 +354,21 @@ async function discoverManagedSessions() {
       const content = await tmux("capture-pane", "-t", paneId, "-p", "-J").catch(() => "");
       agent = panePid ? await detectAgent(panePid, currentCmd, content) : null;
     } catch { /* ignore */ }
-    // Every pane is tracked — not just opencode ones. An unclassified or
-    // shell pane stays in the restore set and is recreated as a bare shell at
-    // boot; only opencode panes pay for the session-id probe.
-    const sessionId = agent === "opencode" && panePid ? await resolvePaneSessionId(panePid) : null;
+    // Every pane is tracked — not just agent ones. An unclassified or shell
+    // pane stays in the restore set and is recreated as a bare shell at boot;
+    // only panes whose agent exposes a conversation pay for the id probe.
+    let sessionId = null;
+    if (agent === "opencode" && panePid) {
+      sessionId = await resolvePaneSessionId(panePid);
+    } else if (agent === "Claude Code" && panePid) {
+      const recorded = claudeSessions.get(paneId);
+      // A <pid>.json from a previous boot can name a pane id that tmux has
+      // since reused. Only trust it while that pid is actually inside this
+      // pane's process tree.
+      if (recorded && (await paneProcesses(panePid)).includes(recorded.pid)) {
+        sessionId = recorded.sessionId;
+      }
+    }
     out.push({ name, dir: panePath || null, sessionId, agent });
   }
   return out;
@@ -412,11 +448,17 @@ async function maintainRegistry() {
   log("INFO", "Active session registry updated", { sessions: registry.sessions.length, removed: removed.length });
   for (const r of removed) log("INFO", "Registry prune", r);
   if (registry.sessions.length > 0) {
-    log("INFO", "Registry contents", registry.sessions.map(
-      (s) => `${s.tmux} → ${s.agent === "opencode"
-        ? (s.sessionId ? `resume ${s.sessionId.slice(0, 24)}` : "no-session-id (will resume -c)")
-        : `recreate-shell (${s.agent || "unclassified"})`}`,
-    ));
+    log("INFO", "Registry contents", registry.sessions.map((s) => {
+      const resumable = s.agent === "opencode" || s.agent === "Claude Code";
+      const label = resumable && s.sessionId
+        ? `resume ${s.sessionId.slice(0, 24)}`
+        : s.agent === "opencode"
+          ? "no-session-id (will resume -c)"
+          : s.agent === "Claude Code"
+            ? "no-session-id (will launch claude)"
+            : `recreate-shell (${s.agent || "unclassified"})`;
+      return `${s.tmux} → ${label}`;
+    }));
   }
 }
 
@@ -432,6 +474,25 @@ async function isSessionResolvable(sessionId) {
   } catch {
     return false;
   }
+}
+
+// A Claude session id is resolvable while its transcript still exists.
+// Claude stores one .jsonl per conversation under a slugified-cwd project dir.
+async function hasClaudeTranscript(sessionId) {
+  let entries;
+  try {
+    entries = await readdir(CLAUDE_PROJECTS_DIR, { withFileTypes: true });
+  } catch {
+    return false;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    try {
+      await access(join(CLAUDE_PROJECTS_DIR, entry.name, `${sessionId}.jsonl`));
+      return true;
+    } catch { /* not in this project dir */ }
+  }
+  return false;
 }
 
 async function executeRestoreAction(action) {
@@ -455,18 +516,28 @@ async function executeRestoreAction(action) {
     }
     return;
   }
-  const cmd = action.continueBest
-    ? `${OPENCODE_BIN} -c`
-    : `${OPENCODE_BIN} -s ${action.sessionId}`;
-  // tmux runs the trailing arg as the pane's initial command, so opencode
+  const isClaude = action.kind === "launch-claude";
+  // An id only reaches a shell command after the resume probe; re-check the
+  // shape anyway so a hand-edited registry can never inject argv.
+  const resumable = isClaude ? isClaudeSessionId(action.sessionId) : Boolean(action.sessionId);
+  let cmd;
+  if (isClaude) {
+    // No `-c` fallback: two panes in the same dir would both continue the
+    // same "most recent" conversation. A fresh session is the honest degrade.
+    cmd = resumable ? `${CLAUDE_BIN} -r ${action.sessionId}` : CLAUDE_BIN;
+  } else {
+    cmd = action.continueBest ? `${OPENCODE_BIN} -c` : `${OPENCODE_BIN} -s ${action.sessionId}`;
+  }
+  // tmux runs the trailing arg as the pane's initial command, so the agent
   // starts directly in the new pane — a self-restoring pane, no keystrokes.
   tmuxArgs.push(cmd);
   try {
     await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
     log("INFO", "Restored agent session", {
       name: action.name,
-      mode: action.continueBest ? "continue-last" : "resume",
-      sessionId: action.sessionId ? action.sessionId.slice(0, 24) : null,
+      agent: isClaude ? "Claude Code" : "opencode",
+      mode: resumable ? "resume" : (isClaude ? "degrade" : "continue-last"),
+      sessionId: resumable ? action.sessionId.slice(0, 24) : null,
       dir: action.dir || null,
     });
   } catch (err) {
@@ -483,8 +554,15 @@ async function runStartupRestore() {
   }
   const ids = [...new Set(registry.sessions.map((s) => s.sessionId).filter(Boolean))];
   const resolvable = new Set();
-  for (const id of ids) {
-    if (await isSessionResolvable(id)) resolvable.add(id);
+  for (const entry of registry.sessions) {
+    const id = entry.sessionId;
+    if (!id || resolvable.has(id)) continue;
+    const ok = entry.agent === "opencode"
+      ? await isSessionResolvable(id)
+      : entry.agent === "Claude Code"
+        ? await hasClaudeTranscript(id)
+        : false;
+    if (ok) resolvable.add(id);
   }
   let existingTmux = [];
   try {

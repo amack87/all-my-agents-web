@@ -1,17 +1,18 @@
 // Pure builder for the boot-time restore plan.
 //
 // Input: the persisted active-session registry plus what the environment tells
-// us at boot (which tmux sessions already exist, and which opencode session ids
-// actually resolve). Output: an ordered list of actions the thin executor in
-// server.js turns into real process calls.
+// us at boot (which tmux sessions already exist, and which session ids actually
+// resolve). Output: an ordered list of actions the thin executor in server.js
+// turns into real process calls.
 //
 // The boot-degrade rule lives here so it is testable: an entry whose sessionId
-// is unknown or unresolvable still gets launched, degraded to `opencode -c`
-// (continue-last) in its recorded project dir. Non-opencode entries (shells,
-// unclassifiable panes) are recreated as bare tmux sessions — the window comes
-// back, not the process state; classification is retried on every live poll,
-// so an unclassified pane can still upgrade to a resumed opencode later. We
-// never silently skip an entry — that is the 2-of-20 silent-failure lesson.
+// is unknown or unresolvable still gets its agent launched — opencode degrades
+// to `-c` (continue-last), Claude Code to a fresh `claude`, both in the recorded
+// project dir. Other entries (shells, unclassifiable panes) are recreated as
+// bare tmux sessions — the window comes back, not the process state;
+// classification is retried on every live poll, so an unclassified pane can
+// still upgrade to a resumed agent later. We never silently skip an entry —
+// that is the 2-of-20 silent-failure lesson.
 //
 // This module must stay free of fs/tmux/network side effects.
 
@@ -23,8 +24,10 @@ export function buildRestorePlan({ registry, existingTmux = [], resolvable = new
     // duplicate panes on the user's screen.
     if (existing.has(entry.tmux)) continue;
     const isOpencode = entry.agent === "opencode";
-    const canResume = isOpencode && Boolean(entry.sessionId && resolvable.has(entry.sessionId));
-    if (canResume) {
+    const isClaude = entry.agent === "Claude Code";
+    const canResume = (isOpencode || isClaude)
+      && Boolean(entry.sessionId && resolvable.has(entry.sessionId));
+    if (canResume && isOpencode) {
       actions.push({
         kind: "launch-opencode",
         name: entry.tmux,
@@ -41,6 +44,14 @@ export function buildRestorePlan({ registry, existingTmux = [], resolvable = new
         sessionId: null,
         continueBest: true,
         reason: "degrade",
+      });
+    } else if (isClaude) {
+      actions.push({
+        kind: "launch-claude",
+        name: entry.tmux,
+        dir: entry.dir,
+        sessionId: canResume ? entry.sessionId : null,
+        reason: canResume ? "resume" : "degrade",
       });
     } else {
       actions.push({
