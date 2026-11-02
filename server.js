@@ -16,6 +16,7 @@ import { detectStatusFromScreen } from "./agent-status.js";
 import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
 import { newSurfaceToken, buildLaunchArgs } from "./surface-token.js";
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
+import { isTrustedConnection } from "./network-access.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -1361,12 +1362,43 @@ function startMaintenance() {
   setInterval(() => maintainRegistry().catch(() => {}), REGISTRY_POLL_MS).unref();
 }
 
+// The Apple Virtualization bridge carries traffic to the Windows VM. Only
+// connections that land on that interface are trusted from the bridge range,
+// so a Wi-Fi LAN that reuses the same addresses gains nothing from the VM's
+// trust. When no bridge is present the bridge range is simply not trusted.
+function findBridgeAddress() {
+  for (const [name, addrs] of Object.entries(os.networkInterfaces())) {
+    if (!/^(bridge|vmnet|vnet)/i.test(name)) continue;
+    for (const addr of addrs ?? []) {
+      if ((addr.family === "IPv4" || addr.family === 4) && !addr.internal) {
+        return addr.address;
+      }
+    }
+  }
+  return null;
+}
+
+const BRIDGE_ADDRESS = findBridgeAddress();
 
 export { app };
 if (process.env.NODE_ENV !== "test") {
   const server = app.listen(PORT, "0.0.0.0", () => {
-    log("INFO", `Server started on http://0.0.0.0:${PORT}`);
+    log("INFO", `Server started on http://0.0.0.0:${PORT} (loopback, Tailscale and VM network only)`);
     log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
+    log("INFO", `Trusted sources: loopback, Tailscale${BRIDGE_ADDRESS ? `, VM bridge ${BRIDGE_ADDRESS}` : " (no VM bridge found)"}`);
     startMaintenance();
+  });
+  // Refuse Wi-Fi LAN (and any other untrusted) connections before HTTP or WebSocket handling.
+  server.on("connection", (socket) => {
+    if (isTrustedConnection({
+      remoteAddress: socket.remoteAddress,
+      localAddress: socket.localAddress,
+      bridgeAddress: BRIDGE_ADDRESS,
+    })) return;
+    log("WARN", "Refused connection from untrusted address", {
+      remoteAddress: socket.remoteAddress,
+      localAddress: socket.localAddress,
+    });
+    socket.destroy();
   });
 }
