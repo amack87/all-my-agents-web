@@ -435,12 +435,15 @@ const api = {
   async getSessions() {
     return fetchJson(apiUrl("/api/sessions"), {}, { timeoutMs: 5000, retries: 1 });
   },
-  async createSession(name) {
+  async createSession(name, opts = {}) {
     return fetchJson(apiUrl("/api/sessions"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({ name, ...opts }),
     }, { timeoutMs: 7000 });
+  },
+  async getTargets() {
+    return fetchJson(apiUrl("/api/targets"), {}, { timeoutMs: 5000, retries: 1 });
   },
   async deleteSession(name, machineHost) {
     const url = machineHost && machineHost !== "local"
@@ -1812,7 +1815,7 @@ document.querySelectorAll("[data-mode]").forEach((btn) => {
 
 $("#modal-back").addEventListener("click", () => setAddSessionMode("pick"));
 
-function populateMachinePicker() {
+async function populateMachinePicker() {
   const select = $("#new-session-machine");
   const localName = state.identity?.name || "This machine";
 
@@ -1839,6 +1842,18 @@ function populateMachinePicker() {
     }
   }
 
+  // Targets are remote machines reached through a launch command (e.g. SSH).
+  // The session itself still lives in this machine's tmux, so targets get a
+  // namespaced value to keep them apart from peer hosts in the same picker.
+  const targets = await api.getTargets().catch(() => []);
+  for (const t of targets) {
+    const value = `target:${t.name}`;
+    if (!seenHosts.has(value)) {
+      seenHosts.add(value);
+      machines.push({ name: t.label || t.name, host: value });
+    }
+  }
+
   select.innerHTML = machines
     .map((m) => `<option value="${m.host}">${esc(m.name)}</option>`)
     .join("");
@@ -1852,9 +1867,13 @@ async function createSession() {
   if (!name) return;
 
   const machineHost = $("#new-session-machine").value || "local";
+  const targetName = machineHost.startsWith("target:") ? machineHost.slice(7) : null;
 
   let result;
-  if (machineHost && machineHost !== "local") {
+  if (targetName) {
+    // Target sessions run here, but their pane runs the target's launch command.
+    result = await api.createSession(name, { target: targetName });
+  } else if (machineHost && machineHost !== "local") {
     // Create on remote machine via proxy
     result = await fetchJson(
       apiUrl(`/api/proxy/${encodeURIComponent(machineHost)}/sessions`),
@@ -1884,7 +1903,7 @@ async function createSession() {
   hideNewSessionModal();
   await loadSessions();
   // Auto-open the new session (with machine context for remote)
-  openTerminal(name, machineHost !== "local" ? machineHost : undefined);
+  openTerminal(name, !targetName && machineHost !== "local" ? machineHost : undefined);
 }
 
 async function loadExistingSessions() {

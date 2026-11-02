@@ -21,8 +21,8 @@ export const REGISTRY_VERSION = 2;
 // single transient miss never drops a session that restore should replay.
 const MISSES_TO_PRUNE = 2;
 
-// live entries come from discovery: { name, dir, sessionId, agent }
-// registry entries are:               { tmux, dir, sessionId, agent, firstSeen, lastActive, misses }
+// live entries come from discovery: { name, dir, sessionId, agent, launch }
+// registry entries are:               { tmux, dir, sessionId, agent, launch, firstSeen, lastActive, misses }
 //
 // Returns { registry, changed, removed }.
 // - `removed` lists prior entries pruned as no longer running (absent across
@@ -60,6 +60,7 @@ export function reconcileRegistry(live, prior, now) {
         dir: prev.dir ?? null,
         sessionId: prev.sessionId ?? null,
         agent: prev.agent ?? null,
+        launch: prev.launch ?? null,
         firstSeen: prev.firstSeen ?? now,
         lastActive: prev.lastActive ?? now,
         misses,
@@ -72,6 +73,7 @@ export function reconcileRegistry(live, prior, now) {
       dir: liveEntry.dir ?? prev.dir ?? null,
       sessionId: liveEntry.sessionId ?? prev.sessionId ?? null,
       agent: liveEntry.agent ?? prev.agent,
+      launch: liveEntry.launch ?? prev.launch ?? null,
       firstSeen: prev.firstSeen ?? now,
       lastActive: now,
       misses: 0,
@@ -85,6 +87,7 @@ export function reconcileRegistry(live, prior, now) {
       dir: liveEntry.dir ?? null,
       sessionId: liveEntry.sessionId ?? null,
       agent: liveEntry.agent ?? null,
+      launch: liveEntry.launch ?? null,
       firstSeen: now,
       lastActive: now,
       misses: 0,
@@ -107,5 +110,15 @@ export function reconcileRegistry(live, prior, now) {
 // intentionally not ignored: a bumped grace counter must change `changed` so
 // the increment persists to disk.
 function sessionsSnapshot(registry) {
-  return registry.sessions.map((s) => ({ ...s, lastActive: undefined }));
+  return registry.sessions.map((s) => {
+    // `lastActive` moves on its own, so it is not part of the comparison.
+    const { lastActive, ...rest } = s;
+    // `launch` is normalised to null so an entry written before launch specs
+    // existed compares equal to one with no spec. The keys are sorted so the
+    // two sides serialise identically no matter which order they were built in.
+    const normalized = { ...rest, launch: rest.launch ?? null };
+    return Object.fromEntries(
+      Object.keys(normalized).sort().map((k) => [k, normalized[k]])
+    );
+  });
 }

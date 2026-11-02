@@ -23,7 +23,7 @@ let peersCacheTime = 0;
 /** Peers seen recently via successful discovery, keyed by "host:port" */
 const recentlySeenPeers = new Map();
 
-const DEFAULT_CONFIG = { name: os.hostname(), port: DEFAULT_PORT, peers: [] };
+const DEFAULT_CONFIG = { name: os.hostname(), port: DEFAULT_PORT, peers: [], targets: [] };
 
 /**
  * Load mesh config from file. The config can optionally specify manual peers,
@@ -50,6 +50,7 @@ export async function loadMeshConfig() {
       name: parsed.name || DEFAULT_CONFIG.name,
       port: parsed.port || DEFAULT_PORT,
       peers: Array.isArray(parsed.peers) ? parsed.peers : [],
+      targets: Array.isArray(parsed.targets) ? parsed.targets : [],
     };
     cachedConfigMtime = mtime;
     configCacheTime = now;

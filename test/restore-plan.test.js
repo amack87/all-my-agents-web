@@ -169,3 +169,30 @@ test("a Claude Code entry that never captured an id still launches claude", () =
     { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: null, reason: "degrade" },
   ]);
 });
+test("a session with a launch spec is relaunched rather than resumed", () => {
+  const registry = {
+    version: 1,
+    updatedAt: "2026-09-01T12:00:00.000Z",
+    sessions: [
+      { tmux: "win", dir: null, sessionId: null, agent: "shell", launch: { kind: "target", name: "windows-vm" }, firstSeen: "x", lastActive: "x" },
+    ],
+  };
+  const actions = buildRestorePlan({ registry, existingTmux: [], resolvable: new Set() });
+  assert.deepEqual(actions, [
+    { kind: "relaunch-command", name: "win", dir: null, launch: { kind: "target", name: "windows-vm" }, reason: "relaunch" },
+  ]);
+});
+
+test("a launch spec takes precedence over a resumable agent", () => {
+  const registry = {
+    version: 1,
+    updatedAt: "2026-09-01T12:00:00.000Z",
+    sessions: [
+      { tmux: "win", dir: "/repos/a", sessionId: "ses_aaa", agent: "opencode", launch: { kind: "target", name: "windows-vm" }, firstSeen: "x", lastActive: "x" },
+    ],
+  };
+  const actions = buildRestorePlan({ registry, existingTmux: [], resolvable: new Set(["ses_aaa"]) });
+  assert.deepEqual(actions, [
+    { kind: "relaunch-command", name: "win", dir: "/repos/a", launch: { kind: "target", name: "windows-vm" }, reason: "relaunch" },
+  ]);
+});

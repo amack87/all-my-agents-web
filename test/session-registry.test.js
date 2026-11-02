@@ -207,3 +207,42 @@ test("updates classification when a shell pane is later identified as opencode",
   assert.equal(registry.sessions[0].sessionId, "ses_9");
   assert.equal(registry.sessions[0].firstSeen, NOW, "firstSeen still survives the promotion");
 });
+test("a live session keeps the launch spec it was launched with", () => {
+  const live = [
+    { name: "win", dir: null, sessionId: null, agent: "shell", launch: { kind: "target", name: "windows-vm" } },
+  ];
+  const { registry } = reconcileRegistry(live, null, NOW);
+  assert.deepEqual(registry.sessions[0].launch, { kind: "target", name: "windows-vm" });
+});
+
+test("a launch spec survives a scan that cannot see it", () => {
+  const prior = {
+    version: REGISTRY_VERSION,
+    updatedAt: NOW,
+    sessions: [
+      { tmux: "win", dir: null, sessionId: null, agent: "shell", launch: { kind: "target", name: "windows-vm" }, firstSeen: NOW, lastActive: NOW, misses: 0 },
+    ],
+  };
+  const live = [{ name: "win", dir: null, sessionId: null, agent: "shell" }];
+  const { registry } = reconcileRegistry(live, prior, NOW);
+  assert.deepEqual(registry.sessions[0].launch, { kind: "target", name: "windows-vm" });
+});
+
+test("a launch spec survives a missed scan", () => {
+  const prior = {
+    version: REGISTRY_VERSION,
+    updatedAt: NOW,
+    sessions: [
+      { tmux: "win", dir: null, sessionId: null, agent: "shell", launch: { kind: "target", name: "windows-vm" }, firstSeen: NOW, lastActive: NOW, misses: 0 },
+    ],
+  };
+  const { registry } = reconcileRegistry([], prior, NOW);
+  assert.deepEqual(registry.sessions[0].launch, { kind: "target", name: "windows-vm" });
+  assert.equal(registry.sessions[0].misses, 1);
+});
+
+test("a session without a launch spec records none", () => {
+  const live = [{ name: "win", dir: null, sessionId: null, agent: "shell" }];
+  const { registry } = reconcileRegistry(live, null, NOW);
+  assert.equal(registry.sessions[0].launch, null);
+});

@@ -15,6 +15,7 @@ import { indexClaudeSessions, isClaudeSessionId } from "./claude-session-index.j
 import { detectStatusFromScreen } from "./agent-status.js";
 import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
 import { newSurfaceToken, buildLaunchArgs } from "./surface-token.js";
+import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -162,21 +163,56 @@ app.get("/api/sessions", async (_req, res) => {
 
 // Create a new tmux session
 app.post("/api/sessions", async (req, res) => {
-  const { name } = req.body;
+  const { name, command, target } = req.body || {};
   if (!name || !/^[a-zA-Z0-9_-]+$/.test(name)) {
     return res.status(400).json({ error: "Invalid session name (alphanumeric, -, _ only)" });
+  }
+  // A session may run a launch command instead of a plain shell. That is how
+  // AMA reaches a machine it cannot host natively: the pane runs an ssh
+  // client and the agent on the far side is driven through that connection.
+  let spec = null;
+  let config = null;
+  if (target) {
+    config = await resolveConfig();
+    spec = buildLaunchSpec({ target });
+  } else {
+    const validated = validateLaunchCommand(command);
+    if (!validated.ok) {
+      return res.status(400).json({ error: validated.error });
+    }
+    spec = buildLaunchSpec({ command: validated.command });
   }
   try {
     // Mint a surface token for the new pane and pass it through its environment,
     // so an agent adapter inside the pane can identify itself on /api/events.
     const token = newSurfaceToken();
+    let launchCommand = null;
+    if (spec) {
+      // The command is built on the server from the mesh config, so the browser
+      // never supplies the command line itself.
+      const rendered = renderLaunchCommand(spec, { targets: config?.targets ?? [], token });
+      if (!rendered.ok) {
+        return res.status(400).json({ error: rendered.error });
+      }
+      launchCommand = rendered.command;
+    }
     surfaceTokens.set(token, name);
-    await tmux(...buildLaunchArgs({ name, token }));
-    res.json({ ok: true, name });
+    launchSpecs.set(name, spec);
+    await tmux(...buildLaunchArgs({ name, token, command: launchCommand }));
+    res.json({ ok: true, name, command: launchCommand });
   } catch (err) {
     recordSpawnError(err);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Targets are the machines a session can reach through a launch command.
+// Only the names are exposed: the host, user and identity path stay in the
+// server's own config.
+app.get("/api/targets", async (_req, res) => {
+  const config = await resolveConfig();
+  const targets = Array.isArray(config.targets) ? config.targets : [];
+  res.json(targets.map((t) => ({ name: t.name, label: t.label || t.name })));
 });
 
 // List all tmux session names (for "add existing" picker)
@@ -280,6 +316,9 @@ function sanitizeSidebarOrder(data) {
 // overrides screen detection while fresh.
 const eventStates = new Map(); // session name or pane id → { status, updatedAt }
 const surfaceTokens = new Map(); // surface token → session name (minted at pane launch)
+// Session name → launch spec. The spec is token-free, so it is safe to
+// persist in the registry and re-render after a restart.
+const launchSpecs = new Map();
 const terminalClients = new Set(); // connected /ws/terminal sockets, for status push
 
 function getEventState(key) {
@@ -369,7 +408,7 @@ async function discoverManagedSessions() {
         sessionId = recorded.sessionId;
       }
     }
-    out.push({ name, dir: panePath || null, sessionId, agent });
+      out.push({ name, dir: panePath || null, sessionId, agent, launch: launchSpecs.get(name) ?? null });
   }
   return out;
 }
@@ -501,6 +540,29 @@ async function executeRestoreAction(action) {
   const token = newSurfaceToken();
   surfaceTokens.set(token, action.name);
   const tmuxArgs = buildLaunchArgs({ name: action.name, dir: action.dir, token });
+  if (action.kind === "relaunch-command") {
+    // The pane is defined by its launch spec, not by an agent on this machine.
+    // Re-resolve the target so a changed host or identity takes effect.
+    const config = await resolveConfig();
+    const rendered = renderLaunchCommand(action.launch, { targets: config.targets, token });
+    if (!rendered.ok) {
+      log("ERROR", "Restore failed", { name: action.name, error: rendered.error });
+      return;
+    }
+    tmuxArgs.push(rendered.command);
+    launchSpecs.set(action.name, action.launch);
+    try {
+      await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+      log("INFO", "Restored launch-command session", {
+        name: action.name,
+        mode: "relaunch-command",
+        dir: action.dir || null,
+      });
+    } catch (err) {
+      log("ERROR", "Restore failed", { name: action.name, error: err.message });
+    }
+    return;
+  }
   if (action.kind === "recreate-shell") {
     // No command: the pane gets a plain shell in the recorded directory. The
     // window comes back even when the process state is gone.
@@ -1299,9 +1361,10 @@ function startMaintenance() {
   setInterval(() => maintainRegistry().catch(() => {}), REGISTRY_POLL_MS).unref();
 }
 
+
 export { app };
 if (process.env.NODE_ENV !== "test") {
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     log("INFO", `Server started on http://0.0.0.0:${PORT}`);
     log("INFO", `Log file: ${join(LOG_DIR, "server.log")}`);
     startMaintenance();
