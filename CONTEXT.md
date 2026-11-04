@@ -6,7 +6,7 @@ Ubiquitous language for All My Agents. Definitions only — no implementation de
 
 - **Session** — one tmux session surfaced by AMA as a single sidebar entry. A session lives on exactly one machine.
 - **Tile** (session tile) — the sidebar row representing one session. The unit the user clicks to open a terminal.
-- **Session key** — a tile's stable identity: `<name>::<machineHost>`. Two machines may host sessions with the same name; the key disambiguates them. Order and group membership are stored against the session key, not the display name.
+- **Session key** — a tile's stable identity: `<machineHost>::<name>` — host first, so a local session reads `local::slice`. Two machines may host sessions with the same name; the key disambiguates them. Order and group membership are stored against the session key, not the display name.
 - **Agent** — the coding agent detected inside a session (for example opencode, Claude Code, Codex). A session with no detected agent reads as `shell`.
 - **Status** — a session's live working state: `needsInput`, `working`, `idle`, `ended`, or `unknown`.
 - **Status source** — where the current status came from: `event` (reported by an agent adapter) or `screen` (inferred from the terminal's rendered text). An `event` status wins while fresh; otherwise the screen inference applies.

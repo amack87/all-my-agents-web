@@ -33,6 +33,8 @@ launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
 - **session-registry.js** - Pure reconciler for the on-disk active-session registry.
 - **restore-plan.js** - Pure builder for the boot-time restore plan.
 - **public/app.js** - Frontend SPA. xterm.js terminals, session list, speedrun mode, zoom controls.
+- **public/sidebar-sync.js** - Pure resolution rules for the sidebar group/order sync. The server imports it too, so both sides resolve the same way.
+- **public/session-order.js** - Pure sidebar order model (groups, ungrouped region, manual order).
 - **public/style.css** - Dark theme, mobile-first responsive layout.
 
 ## Key Constraints
@@ -61,6 +63,13 @@ launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
 - **Resume via native flags**: Restored panes launch `opencode -s <session-id>` (or `opencode -c` when the recorded id no longer resolves). Every AMA-managed pane launches opencode with `-s` so panes self-restore.
 - **Restore kinds**: `restore-plan.js` emits one of `launch-opencode`, `launch-claude`, `relaunch-command` (a session owned by a launch spec) or `recreate-shell` (a bare pane, for anything unclassified). A launch spec takes precedence over an agent kind — the spec owns the pane.
 - **Env vars**: `OPENCODE_BIN` (default `~/.opencode/bin/opencode`), `CLAUDE_BIN` (default `~/.local/bin/claude`), `ALL_MY_AGENTS_LOG_DIR` (default `~/.local/state/all-my-agents`), `ALL_MY_AGENTS_REGISTRY_POLL_MS` (default 30000), `ALL_MY_AGENTS_RESTORE_DELAY_MS` (default 10000). Live state is exposed at `GET /api/registry`.
+
+## Sidebar groups & sync
+
+- **Group definitions are protected**: a copy with **no** groups can never erase a copy that **has** them. The user declares the erasure with `groupsCleared: true`, set only when they delete their last group. Both the client and the server resolve with `pickWinner` in `public/sidebar-sync.js`, so they cannot disagree. See `docs/adr/0006-groups-are-protected.md`.
+- **Sync before render**: `init()` awaits `syncGroups()` **before** `loadSessions()`. The reverse order lets a blank local copy win the race and wipe the server's groups.
+- **The reset button is not app state**: `#reset-btn` clears the host list, zoom and sidebar width — never the group keys — and asks for confirmation first.
+- **Session key format**: `<machineHost>::<name>` — host first (`local::slice`). Defined once, in `public/app.js`'s `sessionKey()`.
 
 ## Agent skills
 

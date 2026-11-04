@@ -24,10 +24,11 @@ const ACTIVE_HOST_KEY = "allmyagents-active-host";
 const APP_STORAGE_KEYS = [
   HOSTS_STORAGE_KEY,
   ACTIVE_HOST_KEY,
-  "allmyagents-session-groups",
-  "allmyagents-session-groups-updated-at",
   "allmyagents-zoom",
   "allmyagents-sidebar-width",
+  // The sidebar groups are deliberately NOT reset. They are the user's
+  // organisation, not app state, and they sync to every other surface — so
+  // wiping them here erased the groups everywhere, not just on this device.
 ];
 
 // Base URL for all API calls. Empty string = same origin (default).
@@ -78,6 +79,11 @@ function setStoredValue(key, value) {
 const RESUME_AFTER_RESET_KEY = "allmyagents-resume-after-reset";
 
 function resetAppState() {
+  if (!window.confirm(
+    "Reset app data on this device?\n\n" +
+    "Clears the cached host list, the zoom level and the sidebar width.\n" +
+    "Your session groups are kept.",
+  )) return;
   // Remember active session so we can reopen it after reset
   if (state.activeSession) {
     try {
@@ -243,7 +249,7 @@ function loadGroups() {
   const fallback = { groups: {}, collapsed: {}, order: [], ungroupedOrder: [] };
   const data = getStoredJson(GROUPS_STORAGE_KEY, fallback);
   if (!data || typeof data !== "object") return fallback;
-  return {
+  const order = {
     groups: data.groups && typeof data.groups === "object" ? data.groups : {},
     collapsed: data.collapsed && typeof data.collapsed === "object" ? data.collapsed : {},
     order: Array.isArray(data.order) ? data.order.filter((n) => typeof n === "string") : [],
@@ -251,6 +257,10 @@ function loadGroups() {
       ? data.ungroupedOrder.filter((k) => typeof k === "string")
       : [],
   };
+  // The flag travels with the data: it is what lets "I deleted my last group"
+  // survive the sync instead of being undone by a copy that still has it.
+  if (data.groupsCleared === true) order.groupsCleared = true;
+  return order;
 }
 
 // Write the local copy without re-stamping it. Used when adopting the server's
@@ -280,6 +290,8 @@ function createGroup(name) {
     data.groups[name] = [];
     data.order = [...data.order.filter((n) => n !== name), name];
   }
+  // The user has groups again, so any earlier "I cleared them" no longer holds.
+  delete data.groupsCleared;
   saveGroups(data);
 }
 
@@ -288,6 +300,10 @@ function deleteGroup(name) {
   delete data.groups[name];
   delete data.collapsed[name];
   data.order = data.order.filter((n) => n !== name);
+  // Deleting the last group is the only way the user can mean "no groups".
+  // The flag lets that intent survive the sync instead of being undone by a
+  // copy that still holds the old group.
+  if (Object.keys(data.groups).length === 0) data.groupsCleared = true;
   saveGroups(data);
 }
 
@@ -2355,8 +2371,12 @@ async function init() {
   try {
     state.identity = await api.getIdentity();
   } catch { /* standalone mode */ }
+  // Adopt the shared copy of the sidebar BEFORE reconciling against the live
+  // sessions. Reconciling first stamps the local copy with a fresh timestamp,
+  // and a blank local copy with a fresh timestamp beats the server's real
+  // groups — which is how the groups got erased from every surface.
+  await syncGroups();
   await loadSessions();
-  syncGroups();
 
   // On desktop, show placeholder in terminal panel
   if (isDesktop()) {

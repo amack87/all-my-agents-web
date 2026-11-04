@@ -22,6 +22,7 @@ import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-e
 import { newSurfaceToken, buildLaunchArgs, buildLaunchInputArgs, buildLaunchSubmitArgs } from "./surface-token.js";
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 import { isTrustedConnection } from "./network-access.js";
+import { pickWinner } from "./public/sidebar-sync.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -464,7 +465,7 @@ function sanitizeSidebarOrder(data) {
   if (src.collapsed && typeof src.collapsed === "object") {
     for (const [name, value] of Object.entries(src.collapsed)) collapsed[name] = !!value;
   }
-  return {
+  const order = {
     groups,
     collapsed,
     order: Array.isArray(src.order) ? src.order.filter((n) => typeof n === "string") : [],
@@ -472,6 +473,10 @@ function sanitizeSidebarOrder(data) {
       ? src.ungroupedOrder.filter((k) => typeof k === "string")
       : [],
   };
+  // The flag records that the user deliberately deleted their last group. It is
+  // the only thing that lets a copy without groups replace one that has them.
+  if (src.groupsCleared === true) order.groupsCleared = true;
+  return order;
 }
 
 // --- Event-derived status ---------------------------------------------------
@@ -831,8 +836,10 @@ app.post("/api/sidebar-groups", (req, res) => {
   const updatedAt = Number.isFinite(body.updatedAt) ? body.updatedAt : 0;
   const incoming = { data: sanitizeSidebarOrder(body.data), updatedAt };
   const existing = loadSidebarGroups();
-  // Last write wins: never let an older push clobber a newer stored copy.
-  const winner = existing && Number(existing.updatedAt) > updatedAt ? existing : incoming;
+  // The same rule the client uses: last write wins, except a copy without groups
+  // cannot erase a copy that has them unless it declared the erasure. Both
+  // sides resolve with pickWinner so a blank copy can never win the race.
+  const winner = existing && pickWinner(existing, incoming) === "local" ? existing : incoming;
   if (winner === incoming) saveSidebarGroups(incoming);
   res.json(winner);
 });
