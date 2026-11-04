@@ -47,13 +47,18 @@ function mapHookEvent(payload) {
   return HOOK_EVENT_MAP[name] || null;
 }
 
-function resolveToken(env = globalThis.process?.env) {
+// These read the environment they are given. The ambient environment is
+// passed in explicitly at the call site, so a token inherited by every
+// descendant process of the pane is a deliberate dependency rather than a
+// hidden default.
+function resolveToken(env) {
   if (!env) return null;
   const token = env[SURFACE_TOKEN_ENV];
   return typeof token === "string" && token.length > 0 ? token : null;
 }
 
-function resolveBaseUrl(env = globalThis.process?.env ?? {}) {
+function resolveBaseUrl(env) {
+  if (!env) return `http://127.0.0.1:3456`;
   if (env.ALL_MY_AGENTS_URL) {
     return env.ALL_MY_AGENTS_URL.replace(/\/+$/, "");
   }
@@ -79,13 +84,13 @@ async function main() {
     return;
   }
   const event = mapHookEvent(payload);
-  const token = resolveToken();
+  const token = resolveToken(globalThis.process?.env);
   if (!event || !token) return;
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
   try {
-    await fetch(`${resolveBaseUrl()}/api/events`, {
+    await fetch(`${resolveBaseUrl(globalThis.process?.env)}/api/events`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(buildBody(event, token)),

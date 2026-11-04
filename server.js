@@ -10,11 +10,16 @@ import os from "node:os";
 import WebSocket from "ws";
 import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh.js";
 import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
+import {
+  buildLocalAuthorities,
+  buildPeerAuthorities,
+  isAllowedOrigin as isOriginAllowed,
+} from "./origin-allowlist.js";
 import { buildRestorePlan } from "./restore-plan.js";
 import { indexClaudeSessions, isClaudeSessionId } from "./claude-session-index.js";
 import { detectStatusFromScreen } from "./agent-status.js";
 import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-events.js";
-import { newSurfaceToken, buildLaunchArgs } from "./surface-token.js";
+import { newSurfaceToken, buildLaunchArgs, buildLaunchInputArgs, buildLaunchSubmitArgs } from "./surface-token.js";
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 import { isTrustedConnection } from "./network-access.js";
 
@@ -42,20 +47,103 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const app = express();
 expressWs(app);
 
+// The port is read before the allowlist, which needs it.
+const PORT = parseInt(process.env.ALL_MY_AGENTS_PORT || "3456", 10);
+
+// --- Origin allowlist -------------------------------------------------------
+//
+// The API can create a session that runs a command, and the terminal
+// WebSocket can type into one, so neither may be reachable from a page the
+// user happens to be visiting. A browser sends an Origin header; a command
+// line client sends none. A request is accepted when it carries no Origin,
+// or when its Origin names this machine or a mesh peer — the web UI fails
+// over to a peer by calling it cross-origin. Anything else is refused.
+//
+// The Origin, not the Host header, is the authority. A DNS-rebinding attack
+// makes the browser send Host: attacker.example and
+// Origin: http://attacker.example: the two agree with each other, and
+// neither names this machine, so the Origin check refuses it.
+//
+// A wildcard would be simpler, and wrong: with one, every web page the user
+// visits could drive this API, which is remote code execution against the
+// machine hosting AMA.
+
+// Every authority that serves this machine: its names, on its own port.
+// The port is part of the match — "http://localhost" is a different server
+// from "http://localhost:3456", and a malicious local web server must not be
+// able to drive the API on this one.
+const LOCAL_AUTHORITIES = buildLocalAuthorities({
+  hostname: os.hostname(),
+  addresses: Object.values(os.networkInterfaces()).flat(),
+  port: PORT,
+});
+
+// The short hostname, used to recognise this machine's MagicDNS name.
+const LOCAL_SHORT_NAME = os.hostname().split(".")[0].toLowerCase();
+
+let peerAuthorities = new Set();
+let peerAuthoritiesAt = 0;
+
+// Known mesh peers, as the authorities they serve on.
+async function knownPeerAuthorities() {
+  const now = Date.now();
+  if (now - peerAuthoritiesAt < 60000) return peerAuthorities;
+  peerAuthoritiesAt = now;
+  const authorities = new Set();
+  try {
+    const config = await resolveConfig();
+    authorities.add(...buildPeerAuthorities(config.peers ?? [], PORT));
+  } catch {
+    // Discovery failed: stay local-only rather than opening up.
+  }
+  peerAuthorities = authorities;
+  return authorities;
+}
+
+async function isAllowedOrigin(origin) {
+  return isOriginAllowed(origin, {
+    localAuthorities: LOCAL_AUTHORITIES,
+    peerAuthorities: await knownPeerAuthorities(),
+    magicDnsShortName: LOCAL_SHORT_NAME,
+    magicDnsPort: PORT,
+  });
+}
+
+// A WebSocket upgrade carries an Origin but is not subject to CORS, so the
+// browser's same-origin rules do not apply to it and the check has to be
+// made here.
+async function isAllowedRequestOrigin(req) {
+  const origin = req.headers.origin;
+  if (!origin) return true; // not a browser
+  return isAllowedOrigin(origin);
+}
+
 app.use(express.json());
-app.use((_req, res, next) => {
+app.use(async (req, res, next) => {
   res.set("Cache-Control", "no-store");
-  // Allow cross-origin requests from other All My Agents instances on the tailnet
-  // (needed for client-side failover between hosts)
-  res.set("Access-Control-Allow-Origin", "*");
+  const origin = req.headers.origin;
+  if (origin) {
+    if (!await isAllowedOrigin(origin)) {
+      log("WARN", "Refused cross-origin request", { origin, path: req.path });
+      return res.status(403).json({ error: "origin not allowed" });
+    }
+    res.set("Access-Control-Allow-Origin", origin);
+    res.set("Vary", "Origin");
+  }
   res.set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS");
   res.set("Access-Control-Allow-Headers", "Content-Type");
+  if (req.method === "OPTIONS") {
+    // The browser sends a preflight before a cross-origin POST with a JSON
+    // body. Without this answer the preflight 404s and the real request is
+    // never sent, so a cross-origin failover silently could not work.
+    res.set("Access-Control-Max-Age", "600");
+    return res.status(204).end();
+  }
   next();
 });
 app.use(express.static(join(__dirname, "public")));
 
 // --- Config ---
-const PORT = parseInt(process.env.ALL_MY_AGENTS_PORT || "3456", 10);
 const TMUX = findTmux();
 
 function findTmux() {
@@ -80,10 +168,74 @@ async function tmux(...args) {
   return stdout.trim();
 }
 
+// Wait for a pane's shell to draw its first prompt. Typing before the shell
+// has taken over the terminal gets the command echoed twice — once by the tty
+// and once by the shell's line editor. The prompt is normally up within a few
+// tens of milliseconds, so a short bounded poll is enough; a shell that never
+// draws one just falls through to the timeout.
+async function waitForShellPrompt(paneId, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const content = await tmux("capture-pane", "-t", paneId, "-p").catch(() => "");
+    if (content) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return false;
+}
+
+// Create a pane and, when it has a command, type that command into it.
+//
+// The pane is a shell and the command is something run inside it, not the
+// pane's process. That is the whole point: when the command ends — an agent
+// exiting, an ssh connection dropping — the shell is still there, so the
+// session survives and the user is back at a prompt rather than watching
+// their tile vanish from the sidebar.
+async function launchPane({ name, dir, token, command, timeoutMs = 5000 } = {}) {
+  let paneId;
+  try {
+    const { stdout } = await execFileAsync(TMUX, buildLaunchArgs({ name, dir, token }), {
+      timeout: timeoutMs,
+    });
+    paneId = stdout.trim();
+  } catch (err) {
+    // tmux refuses a duplicate session name. That is the caller's mistake,
+    // not a fault in the server, so it must not count towards the self-heal
+    // counter: five typos would otherwise take the server down.
+    if (/duplicate session/i.test(err.message)) err.duplicateSession = true;
+    throw err;
+  }
+  // The pane id is server-generated, but it is used as a tmux target, and a
+  // stray line of tmux output would become a target argument. Refuse to use
+  // anything that is not a pane id.
+  if (!/^%\d+$/.test(paneId)) throw new Error("tmux returned an unexpected pane id");
+  if (!command) return paneId;
+  // Typing into a shell that has not drawn its prompt yet echoes the command
+  // twice and can lose characters, so the launch is abandoned rather than
+  // typed into an unprepared pane.
+  if (!await waitForShellPrompt(paneId, timeoutMs)) {
+    throw new Error("the pane's shell never became ready");
+  }
+  await execFileAsync(TMUX, buildLaunchInputArgs(paneId, command), { timeout: timeoutMs });
+  await execFileAsync(TMUX, buildLaunchSubmitArgs(paneId), { timeout: timeoutMs });
+  return paneId;
+}
+
 // --- Self-Healing ---
 // Tracks spawn/PTY errors. If too many in a sliding window, exits the process
 // so launchd (with KeepAlive) restarts cleanly.
 let spawnErrorWindow = [];
+
+// An error message from execFile embeds the full argv. A tmux failure would
+// otherwise write a pane's surface token into the log file and into the HTTP
+// response body, so every live token is scrubbed from every message.
+function redactTokens(message) {
+  if (typeof message !== "string") return message;
+  let out = message;
+  for (const token of surfaceTokens.keys()) {
+    if (token) out = out.split(token).join("[redacted]");
+  }
+  return out;
+}
 
 function recordSpawnError(err) {
   const now = Date.now();
@@ -96,7 +248,7 @@ function recordSpawnError(err) {
   spawnErrorWindow.push(now);
 
   log("ERROR", "Spawn error recorded", {
-    count: spawnErrorWindow.length, max: MAX_ERRORS, windowSec: WINDOW_MS / 1000, error: err.message,
+    count: spawnErrorWindow.length, max: MAX_ERRORS, windowSec: WINDOW_MS / 1000, error: redactTokens(err.message),
   });
 
   if (spawnErrorWindow.length >= MAX_ERRORS) {
@@ -183,10 +335,11 @@ app.post("/api/sessions", async (req, res) => {
     }
     spec = buildLaunchSpec({ command: validated.command });
   }
+  let token = null;
   try {
     // Mint a surface token for the new pane and pass it through its environment,
     // so an agent adapter inside the pane can identify itself on /api/events.
-    const token = newSurfaceToken();
+    token = newSurfaceToken();
     let launchCommand = null;
     if (spec) {
       // The command is built on the server from the mesh config, so the browser
@@ -198,12 +351,23 @@ app.post("/api/sessions", async (req, res) => {
       launchCommand = rendered.command;
     }
     surfaceTokens.set(token, name);
+    await launchPane({ name, token, command: launchCommand });
+    // The spec is recorded only once the pane exists: recording it first
+    // would let a failed launch overwrite the spec of the session that
+    // already holds the name.
     launchSpecs.set(name, spec);
-    await tmux(...buildLaunchArgs({ name, token, command: launchCommand }));
     res.json({ ok: true, name, command: launchCommand });
   } catch (err) {
+    // A name that is already taken is the caller's mistake, not a fault in
+    // the server: it is answered as a conflict and it does not count towards
+    // the self-heal counter.
+    if (err.duplicateSession) {
+      if (token) surfaceTokens.delete(token);
+      log("WARN", "Session name already in use", { name });
+      return res.status(409).json({ error: "Session name already in use" });
+    }
     recordSpawnError(err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: redactTokens(err.message) });
   }
 });
 
@@ -442,6 +606,15 @@ function parseSessionFlags(args) {
   return { sessionId, port: p ? parseInt(p[1], 10) : null };
 }
 
+// An opencode session id looks like `ses_<alphanumerics>`. The id reaches a
+// shell command when a session is restored, so its shape is checked rather
+// than trusted — it can also arrive from the opencode server's own response.
+const OPENCODE_SESSION_ID_RE = /^ses_[A-Za-z0-9]+$/;
+
+function isOpencodeSessionId(value) {
+  return typeof value === "string" && OPENCODE_SESSION_ID_RE.test(value);
+}
+
 // Which opencode session is this pane's TUI on? Prefer an explicit
 // -s/--session flag in the process argv; otherwise ask the pane's opencode
 // server which session it is serving.
@@ -470,9 +643,9 @@ async function resolvePaneSessionId(panePid) {
     if (!res.ok) return null;
     const status = await res.json();
     const keys = Object.keys(status || {});
-    if (keys.length === 1) return keys[0];
+    if (keys.length === 1) return isOpencodeSessionId(keys[0]) ? keys[0] : null;
     const busy = keys.filter((k) => status[k]?.type === "busy");
-    return busy.length === 1 ? busy[0] : null;
+    return busy.length === 1 && isOpencodeSessionId(busy[0]) ? busy[0] : null;
   } catch {
     return null;
   }
@@ -540,7 +713,7 @@ async function executeRestoreAction(action) {
   // identifiable to its adapter too.
   const token = newSurfaceToken();
   surfaceTokens.set(token, action.name);
-  const tmuxArgs = buildLaunchArgs({ name: action.name, dir: action.dir, token });
+  const launch = { name: action.name, dir: action.dir, token };
   if (action.kind === "relaunch-command") {
     // The pane is defined by its launch spec, not by an agent on this machine.
     // Re-resolve the target so a changed host or identity takes effect.
@@ -550,17 +723,16 @@ async function executeRestoreAction(action) {
       log("ERROR", "Restore failed", { name: action.name, error: rendered.error });
       return;
     }
-    tmuxArgs.push(rendered.command);
     launchSpecs.set(action.name, action.launch);
     try {
-      await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+      await launchPane({ ...launch, command: rendered.command, timeoutMs: 15000 });
       log("INFO", "Restored launch-command session", {
         name: action.name,
         mode: "relaunch-command",
         dir: action.dir || null,
       });
     } catch (err) {
-      log("ERROR", "Restore failed", { name: action.name, error: err.message });
+      log("ERROR", "Restore failed", { name: action.name, error: redactTokens(err.message) });
     }
     return;
   }
@@ -568,21 +740,21 @@ async function executeRestoreAction(action) {
     // No command: the pane gets a plain shell in the recorded directory. The
     // window comes back even when the process state is gone.
     try {
-      await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+      await launchPane({ ...launch, timeoutMs: 15000 });
       log("INFO", "Restored shell session", {
         name: action.name,
         mode: "recreate-shell",
         dir: action.dir || null,
       });
     } catch (err) {
-      log("ERROR", "Restore failed", { name: action.name, error: err.message });
+      log("ERROR", "Restore failed", { name: action.name, error: redactTokens(err.message) });
     }
     return;
   }
   const isClaude = action.kind === "launch-claude";
   // An id only reaches a shell command after the resume probe; re-check the
   // shape anyway so a hand-edited registry can never inject argv.
-  const resumable = isClaude ? isClaudeSessionId(action.sessionId) : Boolean(action.sessionId);
+  const resumable = isClaude ? isClaudeSessionId(action.sessionId) : isOpencodeSessionId(action.sessionId);
   let cmd;
   if (isClaude) {
     // No `-c` fallback: two panes in the same dir would both continue the
@@ -591,11 +763,11 @@ async function executeRestoreAction(action) {
   } else {
     cmd = action.continueBest ? `${OPENCODE_BIN} -c` : `${OPENCODE_BIN} -s ${action.sessionId}`;
   }
-  // tmux runs the trailing arg as the pane's initial command, so the agent
-  // starts directly in the new pane — a self-restoring pane, no keystrokes.
-  tmuxArgs.push(cmd);
+  // The agent is typed into the pane's shell rather than installed as the
+  // pane's process, so the session outlives the agent: /exit leaves the
+  // shell behind instead of taking the session down with it.
   try {
-    await execFileAsync(TMUX, tmuxArgs, { timeout: 15000 });
+    await launchPane({ ...launch, command: cmd, timeoutMs: 15000 });
     log("INFO", "Restored agent session", {
       name: action.name,
       agent: isClaude ? "Claude Code" : "opencode",
@@ -604,7 +776,7 @@ async function executeRestoreAction(action) {
       dir: action.dir || null,
     });
   } catch (err) {
-    log("ERROR", "Restore failed", { name: action.name, error: err.message });
+    log("ERROR", "Restore failed", { name: action.name, error: redactTokens(err.message) });
   }
 }
 
@@ -790,6 +962,12 @@ import pty from "node-pty";
 app.ws("/ws/terminal/:target", async (ws, req) => {
   const target = req.params.target;
   log("INFO", "WS connect", { target, remoteAddr: req.ip });
+
+  if (!await isAllowedRequestOrigin(req)) {
+    log("WARN", "WS refused: origin not allowed", { target, origin: req.headers.origin });
+    ws.close();
+    return;
+  }
 
   if (!TMUX_TARGET_RE.test(target)) {
     ws.send(JSON.stringify({ type: "error", message: "Invalid session target" }));
@@ -1247,6 +1425,12 @@ app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
   const peerHost = req.params.peerHost;
   const target = req.params.target;
   log("INFO", "WS proxy connect", { peer: peerHost, target, remoteAddr: req.ip });
+
+  if (!await isAllowedRequestOrigin(req)) {
+    log("WARN", "WS proxy refused: origin not allowed", { peer: peerHost, origin: req.headers.origin });
+    clientWs.close();
+    return;
+  }
 
   if (!PEER_HOST_RE.test(peerHost) || !config.peers.some((p) => `${p.host}:${p.port || PORT}` === peerHost)) {
     clientWs.send(JSON.stringify({ type: "error", message: "Invalid or unauthorized peer" }));
