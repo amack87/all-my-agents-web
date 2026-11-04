@@ -19,6 +19,7 @@ When running multiple AI coding agents in tmux across one or more machines, you 
 - **Speedrun mode** — cycles through agents needing input, auto-advances after you respond
 - **Client-side failover** — if the active server goes down, auto-switches to another
 - **Session management** — create, kill, and restore tmux sessions (local and remote)
+- **Remote targets** — reach a machine AMA cannot host (a Windows VM, for instance) by running the session over SSH, with the agent running natively there
 - **Agent detection** — identifies Claude Code, Cursor, Aider, Codex, or shell
 - **Responsive layout** — sidebar + terminal on desktop, card list on mobile
 - **Zoom controls** — adjustable text size, persisted across sessions
@@ -45,6 +46,17 @@ Node.js server (Machine A)  ◄──── auto-discovery ────►  Node
     ├── /ws/terminal/:target (local PTY)                    ├── /ws/terminal/:target
     └── /ws/proxy/:peer/:target (proxied to remote)         └── /ws/proxy/:peer/:target
 ```
+
+A session may also run a **launch command** instead of a default shell:
+
+```
+tmux pane on Machine A  ──ssh──►  agent running natively on a target
+(session is hosted here;          (a machine that does not run AMA —
+ the agent lives there)            e.g. a Windows VM)
+```
+
+A **peer** is the other shape: a machine that runs AMA itself and contributes
+its own sessions. A **target** is a machine that only runs the agent.
 
 ## Requirements
 
@@ -148,12 +160,63 @@ Surface tokens only exist for panes AMA launches itself (via the New Session
 button or session restore). A Claude Code pane started by hand has no token and
 keeps using screen detection.
 
+## Remote targets
+
+A session may run a **launch command** instead of a default shell. That is how
+AMA reaches a machine it cannot host natively: the pane runs an `ssh` client,
+and the agent on the far side runs natively. On a Windows VM that means a real
+Windows process, on real Windows, with CRLF checkouts, `.cmd` shims, `cmd.exe`
+quoting and Defender behaving exactly as they will for an engineer.
+
+Targets are configured in `mesh.config.json`:
+
+```json
+{
+  "name": "my-macbook",
+  "peers": [],
+  "targets": [
+    {
+      "name": "windows-vm",
+      "label": "Windows 11 VM",
+      "host": "192.168.64.2",
+      "user": "andy",
+      "identityFile": "~/.ssh/ama_windows_ed25519"
+    }
+  ]
+}
+```
+
+`port` is optional (default 22), and `host` may be an `~/.ssh/config` alias. The
+command is built on the server from this entry, so the browser never supplies a
+command line, and the target is re-resolved at launch time — changing a host or
+key takes effect without recreating the session.
+
+Start a session on a target from the new-session dialog, or over the API:
+
+```bash
+curl -X POST http://127.0.0.1:3456/api/sessions \
+  -H 'content-type: application/json' \
+  -d '{"name":"win-agent","target":"windows-vm"}'
+```
+
+`GET /api/targets` lists the configured targets.
+
+The one-time setup on the Windows machine — OpenSSH, the toolchain, the status
+adapter — is scripted in [`setup/windows/`](setup/windows/README.md). AMA itself
+never runs on Windows. See
+[ADR 0002](docs/adr/0002-windows-via-ssh-target.md) for why, and
+[ADR 0004](docs/adr/0004-pane-is-a-shell.md) for how the command reaches the
+pane.
+
 ## Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ALL_MY_AGENTS_PORT` | `3456` | Server port |
+| `ALL_MY_AGENTS_URL` | `http://127.0.0.1:3456` | Base URL an agent adapter posts status events to (on the machine running the agent) |
+| `ALL_MY_AGENTS_LOG_DIR` | `~/.local/state/all-my-agents` | Where the session registry and `server.log` live |
 | `OPENCODE_BIN` | `~/.opencode/bin/opencode` | Path to the opencode binary used for session resume |
+| `CLAUDE_BIN` | `~/.local/bin/claude` | Path to the Claude Code binary used for session resume |
 | `ALL_MY_AGENTS_REGISTRY_POLL_MS` | `30000` | How often the live session registry is re-synced |
 | `ALL_MY_AGENTS_RESTORE_DELAY_MS` | `10000` | Delay after server start before replaying the session registry |
 
@@ -182,7 +245,10 @@ Speedrun prioritizes sessions needing input across all machines. After you respo
 - Peer session data is schema-validated (allowlisted fields only)
 - tmux target parameters are validated against a strict regex
 - WebSocket proxy buffers are capped to prevent memory exhaustion
-- Network access is limited to your Tailscale network — do not expose to the public internet
+- Connections are accepted only from trusted sources — loopback, Tailscale, and the VM bridge — checked at the TCP level before any HTTP or WebSocket handling sees them. The server listens on `0.0.0.0` so it keeps working when Tailscale arrives late, but a connection from anywhere else is dropped. See [ADR 0003](docs/adr/0003-trusted-source-gate.md).
+- There is no HTTPS. The trusted-source gate, not transport encryption, is what keeps port 3456 off the public internet.
+- Cross-origin requests are refused unless the `Origin` is this machine's own name, a configured mesh peer, or this machine's MagicDNS name — and the port has to match too. WebSocket upgrades are checked the same way, because CORS does not apply to them, so a page on another site cannot drive the local server. See [ADR 0005](docs/adr/0005-origin-allowlist.md).
+- There is no authentication. Anything that can reach the server can drive a terminal, so the trusted-source gate and the origin allowlist are the only defences — do not weaken either to make something reachable.
 
 ## Known Issues
 

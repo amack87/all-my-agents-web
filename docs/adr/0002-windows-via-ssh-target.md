@@ -27,7 +27,7 @@ Supporting decisions:
 
 - The launch command is described by a **launch spec** — `{kind: "target", name}` or `{kind: "command", command}` — that is token-free and safe to persist. The registry carries the spec so a target session is rebuilt after a restart, with a freshly minted surface token.
 - A target spec is re-resolved against the current target list at launch time, so changing a host or identity takes effect without recreating the session.
-- `ssh` forwards exactly one environment variable per connection, so only the surface token is forwarded. Where the far side reports status is a property of that machine, so it is configured in the far side's own environment.
+- The surface token is forwarded to the far side **by name, not by value**. The pane's environment already holds `AMA_SURFACE_TOKEN`, and `ssh -o SendEnv=AMA_SURFACE_TOKEN` asks the client to copy that variable across. The value never appears on the command line, so it cannot leak into the pane's scrollback, the shell history, `ps` or an error message. Where the far side reports status is a property of that machine, so it is configured in the far side's own environment.
 
 ## Consequences
 

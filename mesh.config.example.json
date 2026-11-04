@@ -1,4 +1,14 @@
 {
   "name": "my-machine",
-  "peers": []
+  "peers": [],
+  "targets": [
+    {
+      "name": "windows-vm",
+      "label": "Windows 11 VM",
+      "host": "192.168.64.2",
+      "user": "<windows-user>",
+      "port": 22,
+      "identityFile": "~/.ssh/ama_windows_ed25519"
+    }
+  ]
 }
