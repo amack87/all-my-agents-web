@@ -11,6 +11,8 @@
 // This module must stay free of fs/tmux/network side effects so the rules
 // are unit-testable.
 
+import { SURFACE_TOKEN_ENV } from "./surface-token.js";
+
 export const MAX_LAUNCH_COMMAND_LENGTH = 400;
 
 // Validate a caller-supplied launch command.
@@ -39,32 +41,23 @@ export function validateLaunchCommand(command) {
 
 // Build the ssh command for a target: { host, user?, port?, identityFile? }.
 // `host` is an ssh destination — a ~/.ssh/config alias or a hostname.
-export function buildSshCommand({ host, user, port, identityFile, env } = {}) {
+export function buildSshCommand({ host, user, port, identityFile, forwardEnv } = {}) {
   if (!host) return null;
-  const entries = Object.entries(env || {}).filter(
-    ([, value]) => value !== undefined && value !== null && value !== ""
-  );
-  if (entries.length > 1) {
-    // The ssh client honours only the first SetEnv option and silently drops
-    // the rest, so asking for two would look successful and forward one.
-    throw new Error("ssh forwards only one environment variable per connection");
-  }
   const dest = user ? `${user}@${host}` : host;
   const p = Number(port);
   const parts = ["ssh"];
   // Keepalive: a pane whose connection died silently is worse than one that
   // ended, because the user cannot tell the agent stopped working.
   parts.push("-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3");
-  // Forward environment to the far side. The receiving sshd only honours
-  // names it lists in AcceptEnv, so a target that ignores them just gets a
-  // plain shell.
-  if (env && typeof env === "object") {
-    for (const [key, value] of Object.entries(env)) {
-      if (value === undefined || value === null || value === "") continue;
-      const rendered = String(value).includes(" ") ? `"${value}"` : String(value);
-      parts.push("-o", `SetEnv=${key}=${rendered}`);
-    }
-  }
+  // Forward environment by NAME, not by value. `SendEnv` asks the client to
+  // send the named variables out of its own environment, so the value never
+  // appears in the command line — and a command line is echoed into the
+  // shell's history, into the pane's scrollback and into the process table.
+  // The receiving sshd must list the name in AcceptEnv or it drops it.
+  const names = Array.isArray(forwardEnv)
+    ? forwardEnv.filter((n) => typeof n === "string" && n)
+    : [];
+  if (names.length > 0) parts.push("-o", `SendEnv=${names.join(",")}`);
   if (identityFile) parts.push("-i", identityFile);
   if (Number.isInteger(p) && p > 0) parts.push("-p", String(p));
   parts.push(dest);
@@ -102,17 +95,28 @@ export function renderLaunchCommand(spec, { targets = [], token = null } = {}) {
     if (typeof spec.command !== "string" || !spec.command) {
       return { ok: false, error: "launch spec has no command" };
     }
-    return { ok: true, command: spec.command };
+    // The spec may have been replayed from the on-disk registry, so it is
+    // validated again rather than trusted: a hand-edited registry must not
+    // be able to smuggle a command past the launch rules.
+    const validated = validateLaunchCommand(spec.command);
+    if (!validated.ok) return { ok: false, error: validated.error };
+    return { ok: true, command: validated.command };
   }
   if (spec.kind === "target") {
     const list = Array.isArray(targets) ? targets : [];
     const target = list.find((t) => t && t.name === spec.name);
     if (!target) return { ok: false, error: `unknown target: ${spec.name}` };
-    // Only the surface token is forwarded. The ssh client honours a single
-    // SetEnv option, and where to report status is a property of the far
-    // side's machine, not of this session — so the far side configures it.
-    const env = token ? { AMA_SURFACE_TOKEN: token } : {};
-    const command = buildSshCommand({ ...target, env });
+    // The surface token is forwarded by NAME. The pane's own environment
+    // already carries it — AMA exports AMA_SURFACE_TOKEN into the pane — so
+    // the ssh client sends it out of that environment. The value is never
+    // placed on the command line, so it never reaches the shell's history,
+    // the pane's scrollback, the process table or an error message.
+    //
+    // Only the surface token is forwarded. Where the far side reports status
+    // is a property of that machine, so it is configured in the far side's
+    // own environment.
+    const forwardEnv = token ? [SURFACE_TOKEN_ENV] : [];
+    const command = buildSshCommand({ ...target, forwardEnv });
     if (!command) return { ok: false, error: `target ${spec.name} has no host` };
     return { ok: true, command };
   }

@@ -127,19 +127,31 @@ test("a baseUrl is not forwarded over ssh: the connection carries one variable",
   assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@192.168.64.2");
 });
 
-test("a second environment variable is refused rather than silently dropped", () => {
-  assert.throws(
-    () => buildSshCommand({ host: "win-vm", env: { AMA_SURFACE_TOKEN: "t", ALL_MY_AGENTS_URL: "u" } }),
-    /only one environment variable/
-  );
-});
-
-test("the surface token is forwarded to the far side", () => {
+test("the surface token is forwarded to the far side by name, not by value", () => {
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
     targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy" }],
     token: "abc123",
   });
-  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o SetEnv=AMA_SURFACE_TOKEN=abc123 andy@192.168.64.2");
+  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o SendEnv=AMA_SURFACE_TOKEN andy@192.168.64.2");
+});
+
+test("the token value never reaches the command line", () => {
+  // A command line is echoed into the pane's scrollback, written to the
+  // shell's history file and shown in the process table. The value is
+  // forwarded by name instead, so the ssh client picks it up out of the pane's
+  // own environment.
+  const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
+    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy" }],
+    token: "abc123",
+  });
+  assert.ok(!rendered.command.includes("abc123"));
+});
+
+test("several environment names can be forwarded at once", () => {
+  assert.equal(
+    buildSshCommand({ host: "win-vm", forwardEnv: ["AMA_SURFACE_TOKEN", "ALL_MY_AGENTS_URL"] }),
+    "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o SendEnv=AMA_SURFACE_TOKEN,ALL_MY_AGENTS_URL win-vm"
+  );
 });
 
 test("a command spec renders the command it was given", () => {
