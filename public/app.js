@@ -6,7 +6,8 @@ import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicod
 
 // --- Sidebar ordering (pure, DOM-free) ---
 import { moveSession, moveGroup, resolveOrder } from "./session-order.js";
-import { pickWinner } from "./sidebar-sync.js";
+import { pickWinner, isSafeGroupName, sanitizeSidebarOrder } from "./sidebar-sync.js";
+import { esc } from "./escape.js";
 
 // --- Theme Helpers ---
 function getTerminalTheme() {
@@ -249,18 +250,9 @@ function loadGroups() {
   const fallback = { groups: {}, collapsed: {}, order: [], ungroupedOrder: [] };
   const data = getStoredJson(GROUPS_STORAGE_KEY, fallback);
   if (!data || typeof data !== "object") return fallback;
-  const order = {
-    groups: data.groups && typeof data.groups === "object" ? data.groups : {},
-    collapsed: data.collapsed && typeof data.collapsed === "object" ? data.collapsed : {},
-    order: Array.isArray(data.order) ? data.order.filter((n) => typeof n === "string") : [],
-    ungroupedOrder: Array.isArray(data.ungroupedOrder)
-      ? data.ungroupedOrder.filter((k) => typeof k === "string")
-      : [],
-  };
-  // The flag travels with the data: it is what lets "I deleted my last group"
-  // survive the sync instead of being undone by a copy that still has it.
-  if (data.groupsCleared === true) order.groupsCleared = true;
-  return order;
+  // The same normaliser the server runs on what it receives, so both sides
+  // agree on what a group is — including which names are not group names.
+  return sanitizeSidebarOrder(data);
 }
 
 // Write the local copy without re-stamping it. Used when adopting the server's
@@ -285,6 +277,7 @@ function getGroups() {
 }
 
 function createGroup(name) {
+  if (!isSafeGroupName(name)) return;
   const data = loadGroups();
   if (!data.groups[name]) {
     data.groups[name] = [];
@@ -319,6 +312,14 @@ function renameGroup(oldName, newName) {
 }
 
 function addToGroup(groupName, sKey) {
+  // A name that cannot be stored as an object key is not a group; the session
+  // lands in the ungrouped region instead of vanishing.
+  if (!isSafeGroupName(groupName)) {
+    const data = loadGroups();
+    data.ungroupedOrder = (data.ungroupedOrder || []).filter((k) => k !== sKey);
+    saveGroups(data);
+    return;
+  }
   const data = loadGroups();
   // Remove from any existing group first
   for (const [gn, members] of Object.entries(data.groups)) {
@@ -1064,12 +1065,6 @@ function isActiveSession(name, machineHost) {
     && (machineHost || "local") === (state.activeSessionMeta?.machineHost || "local");
 }
 
-function esc(str) {
-  if (!str) return "";
-  const el = document.createElement("span");
-  el.textContent = str;
-  return el.innerHTML;
-}
 
 // --- Mobile Input Fix ---
 // iOS virtual keyboards fire `beforeinput` with inputType "deleteContentBackward"
@@ -1871,7 +1866,7 @@ async function populateMachinePicker() {
   }
 
   select.innerHTML = machines
-    .map((m) => `<option value="${m.host}">${esc(m.name)}</option>`)
+    .map((m) => `<option value="${esc(m.host)}">${esc(m.name)}</option>`)
     .join("");
 
   // Only show if there are multiple machines

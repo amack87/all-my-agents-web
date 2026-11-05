@@ -170,3 +170,22 @@ test("resolveOrder does not invent a groups-cleared flag", () => {
   const out = resolveOrder(data(), [sess("a")], (s) => s.key);
   assert.equal(out.data.groupsCleared, undefined);
 });
+test("a group name that collides with Object.prototype is never created", () => {
+  const moved = moveSession(data(), key("local", "slice"), "__proto__", 0);
+  assert.deepEqual(Object.keys(moved.groups), []);
+  assert.deepEqual(moved.ungroupedOrder, [key("local", "slice")]);
+  assert.equal(Object.getPrototypeOf(moved.groups), Object.prototype);
+});
+
+test("moving a session into an unsafe group lands it ungrouped", () => {
+  const moved = moveSession(data(), key("local", "slice"), "constructor", 0);
+  assert.deepEqual(Object.keys(moved.groups), []);
+  assert.deepEqual(moved.ungroupedOrder, [key("local", "slice")]);
+});
+
+test("moving an unsafe group is a no-op", () => {
+  const before = data({ groups: { Work: [] }, order: ["Work"] });
+  const after = moveGroup(before, "__proto__", 0);
+  assert.deepEqual(after.order, ["Work"]);
+  assert.deepEqual(Object.keys(after.groups), ["Work"]);
+});

@@ -14,6 +14,58 @@
 // A legacy copy that has real content but no timestamp counts as "1": it beats
 // an empty server copy but loses to any timestamped write from the other surface.
 
+// A group name that collides with Object.prototype cannot be stored on a plain
+// object: assigning it changes the object's prototype instead of adding a key,
+// so the group silently disappears and the map loses Object.prototype. Such a
+// name is refused wherever a group name becomes an object key — on the server,
+// in the client, and in the ordering model — so both sides agree on what a
+// group is.
+export function isSafeGroupName(name) {
+  if (typeof name !== "string" || name === "") return false;
+  return name !== "__proto__" && name !== "constructor" && name !== "prototype";
+}
+
+/**
+ * Normalise a sidebar order into the shape both sides store.
+ *
+ * This is the single definition of "a group" and "a session key": the server
+ * runs it on everything it receives, the client runs it on everything it
+ * reads. A group name that collides with Object.prototype is dropped rather
+ * than assigned, because assigning it would change the object's prototype
+ * instead of adding a key — the group would silently vanish.
+ */
+export function sanitizeSidebarOrder(data) {
+  const src = data && typeof data === "object" ? data : {};
+  const groups = {};
+  if (src.groups && typeof src.groups === "object") {
+    for (const [name, members] of Object.entries(src.groups)) {
+      if (!isSafeGroupName(name)) continue;
+      if (Array.isArray(members)) groups[name] = members.filter((k) => typeof k === "string");
+    }
+  }
+  const collapsed = {};
+  if (src.collapsed && typeof src.collapsed === "object") {
+    for (const [name, value] of Object.entries(src.collapsed)) {
+      if (!isSafeGroupName(name)) continue;
+      collapsed[name] = !!value;
+    }
+  }
+  const order = {
+    groups,
+    collapsed,
+    order: Array.isArray(src.order)
+      ? src.order.filter((n) => typeof n === "string" && isSafeGroupName(n))
+      : [],
+    ungroupedOrder: Array.isArray(src.ungroupedOrder)
+      ? src.ungroupedOrder.filter((k) => typeof k === "string")
+      : [],
+  };
+  // The flag records that the user deliberately deleted their last group. It is
+  // the only thing that lets a copy without groups replace one that has them.
+  if (src.groupsCleared === true) order.groupsCleared = true;
+  return order;
+}
+
 function orderHasContent(data) {
   if (!data || typeof data !== "object") return false;
   return (

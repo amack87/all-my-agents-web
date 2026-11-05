@@ -23,7 +23,7 @@ import { EVENT_TYPES, applyEvent, eventStatus, resolveIdentity } from "./agent-e
 import { newSurfaceToken, buildLaunchArgs, buildLaunchInputArgs, buildLaunchSubmitArgs } from "./surface-token.js";
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 import { isTrustedConnection } from "./network-access.js";
-import { pickWinner } from "./public/sidebar-sync.js";
+import { pickWinner, sanitizeSidebarOrder } from "./public/sidebar-sync.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -459,32 +459,6 @@ function saveSidebarGroups(entry) {
   const tmp = `${SIDEBAR_GROUPS_PATH}.tmp`;
   writeFileSync(tmp, JSON.stringify(entry, null, 2), "utf8");
   renameSync(tmp, SIDEBAR_GROUPS_PATH);
-}
-
-function sanitizeSidebarOrder(data) {
-  const src = data && typeof data === "object" ? data : {};
-  const groups = {};
-  if (src.groups && typeof src.groups === "object") {
-    for (const [name, members] of Object.entries(src.groups)) {
-      if (Array.isArray(members)) groups[name] = members.filter((k) => typeof k === "string");
-    }
-  }
-  const collapsed = {};
-  if (src.collapsed && typeof src.collapsed === "object") {
-    for (const [name, value] of Object.entries(src.collapsed)) collapsed[name] = !!value;
-  }
-  const order = {
-    groups,
-    collapsed,
-    order: Array.isArray(src.order) ? src.order.filter((n) => typeof n === "string") : [],
-    ungroupedOrder: Array.isArray(src.ungroupedOrder)
-      ? src.ungroupedOrder.filter((k) => typeof k === "string")
-      : [],
-  };
-  // The flag records that the user deliberately deleted their last group. It is
-  // the only thing that lets a copy without groups replace one that has them.
-  if (src.groupsCleared === true) order.groupsCleared = true;
-  return order;
 }
 
 // --- Event-derived status ---------------------------------------------------

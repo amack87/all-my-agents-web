@@ -10,6 +10,8 @@
 // Manual order wins: nothing here reads a session's status, so tiles never move
 // themselves. See CONTEXT.md and docs/adr/0001-manual-sidebar-order.md.
 
+import { isSafeGroupName } from "./sidebar-sync.js";
+
 export function createEmptyOrder() {
   return { groups: {}, collapsed: {}, order: [], ungroupedOrder: [] };
 }
@@ -19,14 +21,20 @@ function normalize(data) {
   const groups = {};
   if (src.groups && typeof src.groups === "object") {
     for (const [name, members] of Object.entries(src.groups)) {
+      if (!isSafeGroupName(name)) continue;
       groups[name] = Array.isArray(members) ? [...members] : [];
     }
   }
   const collapsed = {};
   if (src.collapsed && typeof src.collapsed === "object") {
-    for (const [name, value] of Object.entries(src.collapsed)) collapsed[name] = !!value;
+    for (const [name, value] of Object.entries(src.collapsed)) {
+      if (!isSafeGroupName(name)) continue;
+      collapsed[name] = !!value;
+    }
   }
-  const order = Array.isArray(src.order) ? src.order.filter((n) => typeof n === "string") : [];
+  const order = Array.isArray(src.order)
+    ? src.order.filter((n) => typeof n === "string" && isSafeGroupName(n))
+    : [];
   const ungroupedOrder = Array.isArray(src.ungroupedOrder)
     ? src.ungroupedOrder.filter((k) => typeof k === "string")
     : [];
@@ -52,22 +60,25 @@ function nameOfKey(key) {
  */
 export function moveSession(data, key, target, index) {
   const next = normalize(data);
+  // A name that cannot be stored as an object key is not a group. Moving a
+  // session into it would silently do nothing, so it lands ungrouped instead.
+  const groupTarget = target == null ? null : (isSafeGroupName(target) ? target : null);
 
   for (const name of Object.keys(next.groups)) {
     next.groups[name] = next.groups[name].filter((k) => k !== key);
   }
   next.ungroupedOrder = next.ungroupedOrder.filter((k) => k !== key);
 
-  if (target == null) {
+  if (groupTarget == null) {
     const at = clamp(index, next.ungroupedOrder.length);
     next.ungroupedOrder.splice(at, 0, key);
   } else {
-    if (!next.groups[target]) {
-      next.groups[target] = [];
-      if (!next.order.includes(target)) next.order.push(target);
+    if (!next.groups[groupTarget]) {
+      next.groups[groupTarget] = [];
+      if (!next.order.includes(groupTarget)) next.order.push(groupTarget);
     }
-    const at = clamp(index, next.groups[target].length);
-    next.groups[target].splice(at, 0, key);
+    const at = clamp(index, next.groups[groupTarget].length);
+    next.groups[groupTarget].splice(at, 0, key);
   }
   return next;
 }
@@ -75,6 +86,7 @@ export function moveSession(data, key, target, index) {
 /** Reorder a group among its peers. Returns a new data object. */
 export function moveGroup(data, name, index) {
   const next = normalize(data);
+  if (!isSafeGroupName(name)) return next;
   next.order = next.order.filter((n) => n !== name);
   for (const groupName of Object.keys(next.groups)) {
     if (groupName !== name && !next.order.includes(groupName)) next.order.push(groupName);

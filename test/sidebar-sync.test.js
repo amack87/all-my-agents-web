@@ -1,6 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { orderTimestamp, orderHasGroups, orderClearedGroups, pickWinner } from "../public/sidebar-sync.js";
+import {
+  orderTimestamp,
+  orderHasGroups,
+  orderClearedGroups,
+  pickWinner,
+  isSafeGroupName,
+  sanitizeSidebarOrder,
+} from "../public/sidebar-sync.js";
 
 const empty = () => ({ groups: {}, collapsed: {}, order: [], ungroupedOrder: [] });
 const filled = () => ({
@@ -77,4 +84,39 @@ test("a timestamped remote write beats legacy local content", () => {
 test("nothing to do when both sides are empty", () => {
   assert.equal(pickWinner({ data: empty(), updatedAt: 0 }, { data: empty(), updatedAt: 0 }), "none");
   assert.equal(pickWinner(null, null), "none");
+});
+
+test("a group name that collides with Object.prototype is not a group", () => {
+  assert.equal(isSafeGroupName("Work"), true);
+  assert.equal(isSafeGroupName(""), false);
+  assert.equal(isSafeGroupName("__proto__"), false);
+  assert.equal(isSafeGroupName("constructor"), false);
+  assert.equal(isSafeGroupName("prototype"), false);
+  assert.equal(isSafeGroupName(null), false);
+  assert.equal(isSafeGroupName(42), false);
+});
+
+test("a group called __proto__ is dropped rather than changing the prototype", () => {
+  // JSON.parse keeps __proto__ as an own property, so this is the exact shape a
+  // hostile or corrupted copy would arrive in.
+  const polluted = JSON.parse('{"groups":{"__proto__":["local::a"],"Work":["local::b"]}}');
+  const data = sanitizeSidebarOrder(polluted);
+  assert.equal(Object.getPrototypeOf(data.groups), Object.prototype);
+  assert.deepEqual(data.groups.Work, ["local::b"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(data.groups, "__proto__"), false);
+});
+
+test("the normaliser keeps the groups-cleared flag and drops unsafe names", () => {
+  const data = sanitizeSidebarOrder({
+    groups: { "__proto__": ["local::a"], constructor: ["local::b"], Work: ["local::c"] },
+    collapsed: { "__proto__": true, Work: true },
+    order: ["__proto__", "Work"],
+    ungroupedOrder: ["local::d", 42],
+    groupsCleared: true,
+  });
+  assert.deepEqual(Object.keys(data.groups), ["Work"]);
+  assert.deepEqual(Object.keys(data.collapsed), ["Work"]);
+  assert.deepEqual(data.order, ["Work"]);
+  assert.deepEqual(data.ungroupedOrder, ["local::d"]);
+  assert.equal(data.groupsCleared, true);
 });
