@@ -24,6 +24,7 @@ import { newSurfaceToken, buildLaunchArgs, buildLaunchInputArgs, buildLaunchSubm
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 import { isTrustedConnection } from "./network-access.js";
 import { pickWinner, sanitizeSidebarOrder } from "./public/sidebar-sync.js";
+import { readSize } from "./public/terminal-size.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -1019,11 +1020,16 @@ app.ws("/ws/terminal/:target", (ws, req) => {
           ptyProcess.write(parsed.data);
         }
       } else if (parsed.type === "resize") {
+        // A size the PTY cannot take is not worth acting on: node-pty throws
+        // on cols/rows <= 0, and the catch below would write the raw frame
+        // into the terminal.
+        const size = readSize(parsed);
+        if (!size) return;
         if (ptyProcess) {
-          ptyProcess.resize(parsed.cols, parsed.rows);
+          ptyProcess.resize(size.cols, size.rows);
         } else {
           // First resize — spawn PTY at correct size
-          spawnPty(parsed.cols, parsed.rows);
+          spawnPty(size.cols, size.rows);
         }
       }
     } catch {
@@ -1040,7 +1046,8 @@ app.ws("/ws/terminal/:target", (ws, req) => {
     try {
       const parsed = JSON.parse(str);
       if (parsed.type === "resize") {
-        spawnPty(parsed.cols, parsed.rows);
+        const size = readSize(parsed);
+        if (size) spawnPty(size.cols, size.rows);
         return;
       }
     } catch { /* not JSON */ }

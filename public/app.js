@@ -7,6 +7,7 @@ import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicod
 // --- Sidebar ordering (pure, DOM-free) ---
 import { moveSession, moveGroup, resolveOrder } from "./session-order.js";
 import { pickWinner, isSafeGroupName, sanitizeSidebarOrder } from "./sidebar-sync.js";
+import { resizeFrame } from "./terminal-size.js";
 import { esc } from "./escape.js";
 
 // --- Theme Helpers ---
@@ -240,6 +241,10 @@ const state = {
   terminalReconnectAttempts: 0,
   renderedSessionsSignature: "",
   inCopyMode: false,
+  // Terminal size: the grid the browser last told the server about, and
+  // whether the grid may have gone stale while the page was not looked at.
+  terminalSize: null,
+  terminalSizeStale: false,
 };
 
 // --- Session Groups (localStorage-backed, synced via the server) ---
@@ -1159,6 +1164,49 @@ function updatePositionIndicator() {
   el.textContent = idx >= 0 ? `${idx + 1} of ${sessions.length}` : "";
 }
 
+// --- Terminal size ---
+//
+// The browser owns the grid (how many columns and rows fit the terminal
+// container); the server owns a PTY with a size of its own, and tmux sizes
+// the shared pane from the client whose size last *changed*. The two drift
+// apart whenever the page is not the one being looked at: a background tab is
+// not laid out, and a phone that was in another app does not report its new
+// viewport until it is shown again. A stale grid never changes, so no resize
+// frame is sent and the far end keeps the size the page had when it went
+// stale - the phone's size, when the user moves to the desktop.
+//
+// So: re-fit on the way back in (visibility, focus) and before the first
+// keystroke after that, and tell the server only when the size really changed.
+
+// Fit the terminal to its container and report the grid it ended up with.
+function fitGrid(fitAddon, term) {
+  try {
+    fitAddon.fit();
+  } catch {
+    // The container is not laid out yet - keep the size we have.
+  }
+  return { cols: term.cols, rows: term.rows };
+}
+
+// Tell the server the current grid size.
+function pushResize(cols, rows) {
+  if (state.ws?.readyState !== 1) return false;
+  state.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+  state.terminalSize = { cols, rows };
+  return true;
+}
+
+// Re-fit the terminal and tell the server when the size changed.
+function syncTerminalSize() {
+  const term = state.terminal;
+  const fitAddon = state.fitAddon;
+  if (!term || !fitAddon) return;
+  const size = fitGrid(fitAddon, term);
+  state.terminalSizeStale = false;
+  const frame = resizeFrame(state.terminalSize, size);
+  if (frame) pushResize(frame.cols, frame.rows);
+}
+
 // --- Terminal ---
 function openTerminal(sessionName, machineHost = "local") {
   state.activeSession = sessionName;
@@ -1259,6 +1307,8 @@ function openTerminal(sessionName, machineHost = "local") {
 
   state.terminal = term;
   state.fitAddon = fitAddon;
+  // A new terminal means a new PTY on the server: it has to be told the size.
+  state.terminalSize = null;
 
   // Patch mobile backspace key repeat
   patchMobileInput(term, () => state.ws);
@@ -1391,10 +1441,9 @@ function openTerminal(sessionName, machineHost = "local") {
 
   // Handle resize
   const resizeHandler = () => {
-    fitAddon.fit();
-    if (state.ws?.readyState === 1) {
-      state.ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
-    }
+    const size = fitGrid(fitAddon, term);
+    const frame = resizeFrame(state.terminalSize, size);
+    if (frame) pushResize(frame.cols, frame.rows);
   };
   window.addEventListener("resize", resizeHandler);
   state._resizeHandler = resizeHandler;
@@ -1518,7 +1567,11 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
       clearTimeout(state.terminalReconnectTimer);
       state.terminalReconnectTimer = null;
     }
-    ws.send(JSON.stringify({ type: "resize", cols: term.cols, rows: term.rows }));
+    // The server starts the PTY at the size of the first frame it receives,
+    // so this one is always sent - after a fresh fit, so the PTY starts at
+    // the size the browser is actually showing.
+    const size = fitGrid(fitAddon, term);
+    pushResize(size.cols, size.rows);
   };
 
   ws.onmessage = (evt) => {
@@ -1575,6 +1628,11 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
   // Send terminal input to server
   term.onData((data) => {
     if (ws.readyState === 1) {
+      // The grid may have gone stale while the page was in the background.
+      // Re-fit first, so the resize reaches tmux before the keystroke does.
+      if (state.terminalSizeStale) {
+        syncTerminalSize();
+      }
       // Auto-exit tmux copy mode when user types
       if (state.inCopyMode) {
         ws.send(JSON.stringify({ type: "input", data: "q" })); // quit copy mode
@@ -2223,7 +2281,8 @@ function applyZoom() {
   const termFontSize = Math.round(14 * zoom);
   if (state.terminal) {
     state.terminal.options.fontSize = termFontSize;
-    state.fitAddon?.fit();
+    // The zoom changes the grid - tell the server the new size.
+    syncTerminalSize();
   }
   applySidebarWidth();
 }
@@ -2444,5 +2503,24 @@ document.addEventListener("visibilitychange", () => {
     if (state.activeSession && state.ws?.readyState !== 1) {
       reconnectTerminal();
     }
+    // The page was not laid out while it was hidden, so the grid is stale:
+    // re-fit it and tell the server, so the terminal is sized for the
+    // viewport it is back in.
+    syncTerminalSize();
+  } else {
+    // The grid can go stale while the page is hidden (the viewport changes,
+    // the tab is not laid out). Remember that, so the first keystroke after
+    // the page comes back re-fits before it is forwarded.
+    state.terminalSizeStale = true;
   }
+});
+
+// A window that loses focus can be moved, resized or rotated while it is not
+// the one being looked at, and the browser does not always report the new
+// viewport. Re-fit when it comes back.
+window.addEventListener("blur", () => {
+  state.terminalSizeStale = true;
+});
+window.addEventListener("focus", () => {
+  syncTerminalSize();
 });
