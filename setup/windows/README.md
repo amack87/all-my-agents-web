@@ -212,6 +212,24 @@ prints `=== AMA_SSH_FIXED ===`. It takes the key URL from `-KeyUrl` (default
 `http://192.168.64.1:8099/ama_windows_ed25519.pub`) or the key itself from
 `-MacPublicKey`, so the HTTP server has to be serving that file.
 
+The key arrives over plain HTTP, so anything running on the machine could squat
+that port and serve a key of its own — which the VM would then trust. Pass the
+Mac's own fingerprint to close that hole:
+
+```bash
+ssh-keygen -lf ~/.ssh/ama_windows_ed25519.pub | awk '{print $2}'
+```
+
+```powershell
+iwr http://192.168.64.1:8099/repair-ssh.ps1 -OutFile $env:TEMP\repair-ssh.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File $env:TEMP\repair-ssh.ps1 -ExpectedFingerprint 'SHA256:...'
+```
+
+With `-ExpectedFingerprint` set, the script refuses to write anything unless
+the key hashes to that value, and exits non-zero on a mismatch. The fingerprint
+it computed is always printed, so you can compare it by eye when you did not
+pass one.
+
 Two traps, both handled inside the script but worth knowing:
 
 - `Invoke-WebRequest` returns `Content` as a **byte array**, not a string, when
@@ -265,7 +283,7 @@ there.
 |--------|---------|--------|--------------|
 | `enable-ssh.ps1` | Windows | Elevated PowerShell | Installs OpenSSH Server, starts `sshd`, scopes the firewall to the guest's subnet, disables password auth, installs the Mac's key, prints the `ssh` command |
 | `enable-ssh-oneliner.txt` | Windows | Elevated PowerShell | The same thing as one copy-pasteable line |
-| `repair-ssh.ps1` | Windows | Elevated PowerShell | Recovers SSH access when `authorized_keys` is broken: fetches the Mac's key over HTTP, rewrites both files with the right ACLs, restarts `sshd` |
+| `repair-ssh.ps1` | Windows | Elevated PowerShell | Recovers SSH access when `authorized_keys` is broken: fetches the Mac's key over HTTP (verify it with `-ExpectedFingerprint`), rewrites both files with the right ACLs, restarts `sshd` |
 | `install-toolchain.ps1` | Windows | Elevated PowerShell | Installs Git, Node, Python and Claude Code with `winget`; logs to `%TEMP%\ama-toolchain.log` |
 | `configure-env.ps1` | Windows | Any PowerShell | Puts Claude Code on `PATH`, creates a working `python3`, pins `CLAUDE_CODE_GIT_BASH_PATH` |
 | `install-adapter.ps1` | Windows | Administrator PowerShell, over SSH | Adds `AcceptEnv` to `sshd_config`, restarts `sshd`, installs the adapter and wires up Claude Code hooks |

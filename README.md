@@ -165,6 +165,10 @@ It posts to the local server (`ALL_MY_AGENTS_PORT`, default `3456`). To point
 it elsewhere, set `ALL_MY_AGENTS_URL` (e.g. `http://100.x.x.x:3456`) in the
 environment opencode runs in.
 
+If the pane was launched by AMA, the adapter also sends the pane's surface
+token, so the server identifies the session exactly instead of matching a
+session id that anything else could guess.
+
 ### Agent status adapter (Claude Code)
 
 opencode identifies itself by its registry session id. Claude Code has no such
@@ -289,6 +293,8 @@ Speedrun prioritizes sessions needing input across all machines. After you respo
 - There is no HTTPS. The trusted-source gate, not transport encryption, is what keeps port 3456 off the public internet.
 - Cross-origin requests are refused unless the `Origin` is this machine's own name, a configured mesh peer, or this machine's **full** MagicDNS name — machine and tailnet, matched whole, because another tailnet can publish a name that starts with the same short hostname — and the port has to match too. WebSocket upgrades are checked the same way, because CORS does not apply to them, so a page on another site cannot drive the local server. See [ADR 0005](docs/adr/0005-origin-allowlist.md).
 - There is no authentication. Anything that can reach the server can drive a terminal, so the trusted-source gate and the origin allowlist are the only defences — do not weaken either to make something reachable.
+- Every value that reaches the markup is escaped, quotes included. A session name arrives from a peer machine over the mesh and lands in `data-` attributes; a name containing a quote would otherwise close the attribute and become markup, and script running in the AMA origin can then drive the API.
+- Two things are deliberately *not* defended, because defending them would not help: session creation is not rate-limited (the same endpoint accepts a command that runs in a pane, so the origin allowlist is the control that matters, not a cap), and the surface token is briefly visible in `ps` to the same user (tmux cannot set a pane environment variable without passing the value in its argv, and the alternatives put it in the scrollback and the shell history). See [ADR 0007](docs/adr/0007-what-the-server-does-not-defend-against.md).
 
 ## Known Issues
 
