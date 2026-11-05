@@ -2,9 +2,42 @@
 
 A web interface for managing AI coding agent sessions (Claude Code, Cursor, Aider, Codex) across multiple machines. Works on both mobile and desktop, with auto-discovery of peers via Tailscale.
 
+## Quickstart
+
+```bash
+git clone https://github.com/amack87/all-my-agents-web.git
+cd all-my-agents-web
+npm install
+cp mesh.config.example.json mesh.config.json
+```
+
+Edit `mesh.config.json` and give the machine its name:
+
+```json
+{ "name": "my-macbook", "peers": [] }
+```
+
+Then start the server and open <http://localhost:3456>:
+
+```bash
+npm start
+```
+
+Every tmux session on this machine shows up in the sidebar — start one with
+`tmux new -s my-agent` and it appears within a few seconds. To reach the
+server from your phone or another machine, install
+[Tailscale](https://tailscale.com/); peers running AMA are then discovered
+automatically.
+
 ## UI Example
 
-![All My Agents UI example](docs/images/ui-example.png)
+The desktop layout: the session list on the left, a live terminal on the right.
+
+![All My Agents on desktop](docs/images/ui-example.png)
+
+The same session list on a phone.
+
+![All My Agents on mobile](docs/images/ui-mobile.png)
 
 ## Why
 
