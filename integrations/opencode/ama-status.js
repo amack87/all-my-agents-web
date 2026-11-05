@@ -14,11 +14,11 @@
 // (or rejects the event because the session is unknown), opencode is
 // completely unaffected.
 //
-// NOTE ON SHAPE: opencode's legacy plugin loader iterates every export of the
-// module and throws unless each one is a plugin function. So this module
-// exports exactly one function. The pure mapping helpers used by the unit
-// tests hang off that function as `AmaStatusPlugin.helpers` — visible to
-// `import`, invisible to the loader.
+// NOTE ON SHAPE: opencode's plugin loader reads the module's DEFAULT export
+// (opencode 1.19 and later) and ignores the named ones, so the plugin is
+// exported both ways: the default is what opencode loads, the named export
+// is what the unit tests import. The pure mapping helpers the tests need
+// hang off that function as `AmaStatusPlugin.helpers`.
 
 const POST_TIMEOUT_MS = 1500;
 
@@ -174,3 +174,5 @@ AmaStatusPlugin.helpers = {
   buildBody,
   HOOK_EVENTS,
 };
+
+export default AmaStatusPlugin;
