@@ -108,17 +108,25 @@ export const SuperwhisperOptInPlugin = async (input) => {
   // not produce an event before its first notification, so mute the known
   // sessions up front. Best effort: if the client cannot answer, the event
   // hook below still mutes a session the moment it is heard about.
-  try {
-    const listed = await input?.client?.session?.list?.();
-    const sessions = Array.isArray(listed) ? listed : (listed?.data ?? []);
-    for (const session of sessions) {
-      const id = session?.id ?? session?.sessionID;
-      if (isUsableSessionId(id)) state.ensureMuted(id);
-    }
-  } catch {
-    // The client is not ready yet, or the shape is different. The event hook
-    // is the real guarantee; this is only a head start.
-  }
+  //
+  // This MUST NOT be awaited. opencode builds its plugins before its server
+  // answers, and `client` talks to that server, so awaiting here waits on a
+  // server that is waiting on this plugin: opencode hangs on a black screen,
+  // and a try/catch cannot help because the promise never settles. Start it,
+  // return, and let it finish once the server is up.
+  Promise.resolve()
+    .then(() => input?.client?.session?.list?.())
+    .then((listed) => {
+      const sessions = Array.isArray(listed) ? listed : (listed?.data ?? []);
+      for (const session of sessions) {
+        const id = session?.id ?? session?.sessionID;
+        if (isUsableSessionId(id)) state.ensureMuted(id);
+      }
+    })
+    .catch(() => {
+      // The client is not ready, or the shape is different. The event hook
+      // is the real guarantee; this is only a head start.
+    });
 
   return {
     // Any bus event that mentions a session is enough to mute it. Session

@@ -201,10 +201,57 @@ test("sessions that already existed are muted at startup", async () => {
   const previous = process.env.SUPERWHISPER_MESSAGE_DIR;
   process.env.SUPERWHISPER_MESSAGE_DIR = dir;
   try {
-    const hooks = await SuperwhisperOptInPlugin({
+    await SuperwhisperOptInPlugin({
       client: { session: { list: async () => ({ data: [{ id: "ses_older" }] }) } },
     });
+    // The head start runs in the background so it cannot block startup.
+    for (let i = 0; i < 20 && !existsSync(join(dir, "disabled-ses_older")); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
     assert.equal(existsSync(join(dir, "disabled-ses_older")), true);
+  } finally {
+    if (previous === undefined) delete process.env.SUPERWHISPER_MESSAGE_DIR;
+    else process.env.SUPERWHISPER_MESSAGE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Regression: opencode builds plugins before its server answers, and the
+// client talks to that server. Awaiting session.list() during init therefore
+// waits on a server that is waiting on us, and opencode hangs on a black
+// screen. The call must never gate plugin initialisation.
+test("a client that never answers does not block the plugin loading", async () => {
+  const { dir } = freshState();
+  const previous = process.env.SUPERWHISPER_MESSAGE_DIR;
+  process.env.SUPERWHISPER_MESSAGE_DIR = dir;
+  try {
+    const never = new Promise(() => {});
+    const loaded = SuperwhisperOptInPlugin({ client: { session: { list: () => never } } });
+    const outcome = await Promise.race([
+      loaded.then(() => "loaded"),
+      new Promise((resolve) => setTimeout(() => resolve("hung"), 500)),
+    ]);
+    assert.equal(outcome, "loaded");
+  } finally {
+    if (previous === undefined) delete process.env.SUPERWHISPER_MESSAGE_DIR;
+    else process.env.SUPERWHISPER_MESSAGE_DIR = previous;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a client that answers late still gets its sessions muted", async () => {
+  const { dir } = freshState();
+  const previous = process.env.SUPERWHISPER_MESSAGE_DIR;
+  process.env.SUPERWHISPER_MESSAGE_DIR = dir;
+  try {
+    let answer;
+    const late = new Promise((resolve) => { answer = resolve; });
+    await SuperwhisperOptInPlugin({ client: { session: { list: () => late } } });
+    answer({ data: [{ id: "ses_late" }] });
+    for (let i = 0; i < 20 && !existsSync(join(dir, "disabled-ses_late")); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(existsSync(join(dir, "disabled-ses_late")), true);
   } finally {
     if (previous === undefined) delete process.env.SUPERWHISPER_MESSAGE_DIR;
     else process.env.SUPERWHISPER_MESSAGE_DIR = previous;
