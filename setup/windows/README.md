@@ -118,7 +118,7 @@ In `mesh.config.json`:
       "name": "windows-vm",
       "label": "Windows 11 VM",
       "host": "192.168.64.2",
-      "user": "andy",
+      "user": "<windows-user>",
       "identityFile": "~/.ssh/ama_windows_ed25519"
     }
   ]
@@ -148,15 +148,15 @@ curl -X POST http://127.0.0.1:3456/api/sessions \
 Run **over SSH**, from an Administrator PowerShell on the Mac:
 
 ```bash
-scp ~/.ssh/ama_windows_ed25519 andy@192.168.64.2:/C:/Users/Andy/
-ssh -i ~/.ssh/ama_windows_ed25519 andy@192.168.64.2 \
-  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\Andy\\install-adapter.ps1 C:\\Users\\Andy\\ama-status-hook.js"
+scp ~/.ssh/ama_windows_ed25519 <windows-user>@192.168.64.2:/C:/Users/<windows-user>/
+ssh -i ~/.ssh/ama_windows_ed25519 <windows-user>@192.168.64.2 \
+  "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\\Users\\<windows-user>\\install-adapter.ps1 C:\\Users\\<windows-user>\\ama-status-hook.js"
 ```
 
 Copy the adapter across first, then run the script with its path as the argument:
 
 ```bash
-scp integrations/claude/ama-status-hook.js andy@192.168.64.2:/C:/Users/Andy/
+scp integrations/claude/ama-status-hook.js <windows-user>@192.168.64.2:/C:/Users/<windows-user>/
 ```
 
 The script does two halves:

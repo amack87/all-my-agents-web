@@ -18,7 +18,7 @@ test("loopback is trusted so local adapters keep reporting", () => {
 
 // Phone and mesh peers arrive over Tailscale.
 test("Tailscale addresses are trusted, and the range stops at 100.127.255.255", () => {
-  for (const ip of ["100.64.35.46", "::ffff:100.101.2.3", "100.127.255.255", "fd7a:115c:a1e0::1234"]) {
+  for (const ip of ["100.64.1.1", "::ffff:100.101.2.3", "100.127.255.255", "fd7a:115c:a1e0::1234"]) {
     assert.equal(isTrustedRemoteAddress(ip), true, ip);
   }
   for (const ip of ["100.63.255.255", "100.128.0.1"]) {
@@ -55,7 +55,7 @@ test("a LAN host reusing the bridge range is refused", () => {
   assert.equal(
     isTrustedConnection({
       remoteAddress: "192.168.64.2",
-      localAddress: "192.168.1.198",
+      localAddress: "192.168.1.150",
       bridgeAddress: "192.168.64.1",
     }),
     false
@@ -74,9 +74,9 @@ test("the bridge range is refused when no bridge address is known", () => {
 });
 
 test("loopback and Tailscale are trusted wherever they land", () => {
-  for (const remoteAddress of ["127.0.0.1", "::1", "100.64.35.46", "fd7a:115c:a1e0::f035:232f"]) {
+  for (const remoteAddress of ["127.0.0.1", "::1", "100.64.1.1", "fd7a:115c:a1e0::6440:101"]) {
     assert.equal(
-      isTrustedConnection({ remoteAddress, localAddress: "192.168.1.198", bridgeAddress: "192.168.64.1" }),
+      isTrustedConnection({ remoteAddress, localAddress: "192.168.1.150", bridgeAddress: "192.168.64.1" }),
       true,
       remoteAddress
     );
@@ -87,7 +87,7 @@ test("an untrusted address is refused however it arrives", () => {
   assert.equal(
     isTrustedConnection({
       remoteAddress: "192.168.1.50",
-      localAddress: "192.168.1.198",
+      localAddress: "192.168.1.150",
       bridgeAddress: "192.168.64.1",
     }),
     false

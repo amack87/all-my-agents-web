@@ -9,12 +9,12 @@ The server can be run directly or as a **launchd agent** that auto-starts on log
 node server.js
 
 # Or install as a launchd agent (see setup/launchd-example.plist)
-# Customize the plist with your paths, then:
-cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents-mobile.plist
-launchctl load ~/Library/LaunchAgents/com.allmyagents-mobile.plist
+# Replace the __PLACEHOLDER__ values in the plist, then:
+cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents-web.plist
+launchctl load ~/Library/LaunchAgents/com.allmyagents-web.plist
 
 # Restart after code changes
-launchctl stop com.allmyagents-mobile && launchctl start com.allmyagents-mobile
+launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
 ```
 
 - **Port**: 3456 (HTTP + WebSocket), configurable via `ALL_MY_AGENTS_PORT` env var

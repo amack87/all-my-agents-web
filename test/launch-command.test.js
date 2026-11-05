@@ -51,7 +51,7 @@ test("buildSshCommand connects to a host", () => {
 });
 
 test("buildSshCommand qualifies the host with a user", () => {
-  assert.equal(buildSshCommand({ host: "192.168.64.2", user: "andy" }), "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@192.168.64.2");
+  assert.equal(buildSshCommand({ host: "192.168.64.2", user: "tester" }), "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 tester@192.168.64.2");
 });
 
 test("buildSshCommand carries a non-default port", () => {
@@ -67,14 +67,14 @@ test("buildSshCommand carries an identity file", () => {
 
 test("buildSshCommand yields nothing without a host", () => {
   assert.equal(buildSshCommand({}), null);
-  assert.equal(buildSshCommand({ user: "andy" }), null);
+  assert.equal(buildSshCommand({ user: "tester" }), null);
 });
 
 test("resolveTargetCommand builds the command for a named target", () => {
-  const targets = [{ name: "win-vm", host: "192.168.64.2", user: "andy" }];
+  const targets = [{ name: "win-vm", host: "192.168.64.2", user: "tester" }];
   assert.deepEqual(resolveTargetCommand(targets, "win-vm"), {
     ok: true,
-    command: "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@192.168.64.2",
+    command: "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 tester@192.168.64.2",
   });
 });
 
@@ -107,32 +107,32 @@ test("a session with neither a target nor a command has no launch spec", () => {
 
 test("a target spec renders the ssh command for that target", () => {
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
-    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy" }],
+    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "tester" }],
   });
   assert.equal(rendered.ok, true);
-  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@192.168.64.2");
+  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 tester@192.168.64.2");
 });
 
 test("a target spec is re-resolved, so a changed host takes effect", () => {
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
-    targets: [{ name: "windows-vm", host: "10.0.0.9", user: "andy" }],
+    targets: [{ name: "windows-vm", host: "10.0.0.9", user: "tester" }],
   });
-  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@10.0.0.9");
+  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 tester@10.0.0.9");
 });
 
 test("a baseUrl is not forwarded over ssh: the connection carries one variable", () => {
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
-    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy", baseUrl: "http://192.168.64.1:3456" }],
+    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "tester", baseUrl: "http://192.168.64.1:3456" }],
   });
-  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 andy@192.168.64.2");
+  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 tester@192.168.64.2");
 });
 
 test("the surface token is forwarded to the far side by name, not by value", () => {
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
-    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy" }],
+    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "tester" }],
     token: "abc123",
   });
-  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o SendEnv=AMA_SURFACE_TOKEN andy@192.168.64.2");
+  assert.equal(rendered.command, "ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o SendEnv=AMA_SURFACE_TOKEN tester@192.168.64.2");
 });
 
 test("the token value never reaches the command line", () => {
@@ -141,7 +141,7 @@ test("the token value never reaches the command line", () => {
   // forwarded by name instead, so the ssh client picks it up out of the pane's
   // own environment.
   const rendered = renderLaunchCommand({ kind: "target", name: "windows-vm" }, {
-    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "andy" }],
+    targets: [{ name: "windows-vm", host: "192.168.64.2", user: "tester" }],
     token: "abc123",
   });
   assert.ok(!rendered.command.includes("abc123"));

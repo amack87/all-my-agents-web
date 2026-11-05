@@ -127,7 +127,7 @@ function claudeRegistry(entry = {}) {
     version: 2,
     updatedAt: "x",
     sessions: [
-      { tmux: "questions", dir: "/Users/andy/Repos", sessionId: CLAUDE_ID, agent: "Claude Code", firstSeen: "x", lastActive: "x", ...entry },
+      { tmux: "questions", dir: "/home/example/project", sessionId: CLAUDE_ID, agent: "Claude Code", firstSeen: "x", lastActive: "x", ...entry },
     ],
   };
 }
@@ -140,7 +140,7 @@ test("resumes a Claude Code entry when its transcript resolves", () => {
   });
 
   assert.deepEqual(actions, [
-    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: CLAUDE_ID, reason: "resume" },
+    { kind: "launch-claude", name: "questions", dir: "/home/example/project", sessionId: CLAUDE_ID, reason: "resume" },
   ]);
 });
 
@@ -154,7 +154,7 @@ test("degrades a Claude Code entry to a fresh claude when the transcript is gone
   });
 
   assert.deepEqual(actions, [
-    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: null, reason: "degrade" },
+    { kind: "launch-claude", name: "questions", dir: "/home/example/project", sessionId: null, reason: "degrade" },
   ]);
 });
 
@@ -166,7 +166,7 @@ test("a Claude Code entry that never captured an id still launches claude", () =
   });
 
   assert.deepEqual(actions, [
-    { kind: "launch-claude", name: "questions", dir: "/Users/andy/Repos", sessionId: null, reason: "degrade" },
+    { kind: "launch-claude", name: "questions", dir: "/home/example/project", sessionId: null, reason: "degrade" },
   ]);
 });
 test("a session with a launch spec is relaunched rather than resumed", () => {

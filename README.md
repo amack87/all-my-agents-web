@@ -98,12 +98,19 @@ npm run dev        # with --watch for auto-reload
 
 ### Run as a persistent service (launchd)
 
-An example plist is provided in `setup/launchd-example.plist`. Customize the paths and label for your machine, then:
+An example plist is provided in `setup/launchd-example.plist`. Replace the three
+`__PLACEHOLDER__` values in it (`__REPO_PATH__`, `__NODE_PATH__`, `__LOG_PATH__`),
+then:
 
 ```bash
-cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents.plist
-launchctl load ~/Library/LaunchAgents/com.allmyagents.plist
+cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents-web.plist
+launchctl load ~/Library/LaunchAgents/com.allmyagents-web.plist
 ```
+
+Do not remove the `PATH` entry from the plist's `EnvironmentVariables`. launchd
+gives a job a minimal `PATH`, and without it `tailscale` is not found — peer
+auto-discovery then fails silently: the server starts, but the mesh stays empty
+and nothing says why.
 
 ### Agent status adapter (opencode)
 
@@ -179,7 +186,7 @@ Targets are configured in `mesh.config.json`:
       "name": "windows-vm",
       "label": "Windows 11 VM",
       "host": "192.168.64.2",
-      "user": "andy",
+      "user": "<windows-user>",
       "identityFile": "~/.ssh/ama_windows_ed25519"
     }
   ]
@@ -254,3 +261,7 @@ Speedrun prioritizes sessions needing input across all machines. After you respo
 
 - **node-pty compatibility**: The stable node-pty 1.1.0 fails with `posix_spawnp` on Node 22 / macOS ARM. Must use beta 1.2.0-beta.11.
 - **TMUX env stripping**: When the server itself runs inside tmux, the `TMUX` and `TMUX_PANE` env vars must be stripped before spawning `tmux attach`, or it will refuse to nest.
+
+## License
+
+MIT — see [LICENSE](LICENSE).

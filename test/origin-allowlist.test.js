@@ -14,7 +14,7 @@ import {
 
 // The machine running the tests. Every local name is derived from it so the
 // tests describe one concrete deployment.
-const HOSTNAME = "andys-macbook-pro";
+const HOSTNAME = "test-machine";
 const PORT = 3456;
 const LOCAL_AUTHORITIES = buildLocalAuthorities({
   hostname: HOSTNAME,
@@ -82,7 +82,7 @@ test("a host that merely resembles the local name is refused", () => {
   // subdomain of an attacker's own domain that happens to start with this
   // machine's name must not pass.
   assert.equal(isAllowedOrigin(`http://${HOSTNAME}.evil.example:3456`, OPTIONS), false);
-  assert.equal(isAllowedOrigin("http://andys-macbook-prox.tailnet.ts.net:3456", OPTIONS), false);
+  assert.equal(isAllowedOrigin(`http://${HOSTNAME}x.tailnet.ts.net:3456`, OPTIONS), false);
 });
 
 test("another local port cannot drive the API", () => {
@@ -111,7 +111,7 @@ test("local names include the hostname, its short form and every interface addre
     addresses: [{ address: "192.168.64.1" }],
   });
   assert.ok(names.has(HOSTNAME));
-  assert.ok(names.has("andys-macbook-pro"));
+  assert.ok(names.has("test-machine"));
   assert.ok(names.has("192.168.64.1"));
   assert.ok(names.has("::1"));
 });
@@ -129,7 +129,7 @@ test("the MagicDNS rule matches the whole name, not a prefix", () => {
 });
 
 test("MagicDNS names are normalised before comparison", () => {
-  assert.equal(normalizeMagicDnsName("  ANDYS-MacBook-Pro.Tailnet.TS.NET.  "), "andys-macbook-pro.tailnet.ts.net");
+  assert.equal(normalizeMagicDnsName("  TEST-Machine.Tailnet.TS.NET.  "), "test-machine.tailnet.ts.net");
   assert.equal(normalizeMagicDnsName(undefined), "");
 });
 

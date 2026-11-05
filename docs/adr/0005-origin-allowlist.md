@@ -14,7 +14,7 @@ The server answered with `Access-Control-Allow-Origin: *`. That is the worst of 
 
 CORS is a response-reading control, not an authorization control. Something else has to decide who may make the request in the first place.
 
-The first version of this decision had a hole in it, and it was found before the code was pushed. The MagicDNS rule matched any name that *started with* the machine's short name and ended in `.ts.net` — without looking at the tailnet segment. Tailscale tailnet names are chosen by whoever owns the tailnet, so an attacker could create their own tailnet, name a node after this machine, and serve a page from `amer-cy4dq52l6c.evil.ts.net`. The server accepted that origin and the attacker's page created a session running a command on this machine: the drive-by remote code execution this decision exists to prevent. The rule now matches the machine's own full MagicDNS name and nothing else.
+The first version of this decision had a hole in it, and it was found before the code was pushed. The MagicDNS rule matched any name that *started with* the machine's short name and ended in `.ts.net` — without looking at the tailnet segment. Tailscale tailnet names are chosen by whoever owns the tailnet, so an attacker could create their own tailnet, name a node after this machine, and serve a page from `<this-machine>.evil.ts.net`. The server accepted that origin and the attacker's page created a session running a command on this machine: the drive-by remote code execution this decision exists to prevent. The rule now matches the machine's own full MagicDNS name and nothing else.
 
 ## Decision
 

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Example launchd agent for All My Agents.
+
+  Before installing, replace every __PLACEHOLDER__ below:
+
+    __REPO_PATH__   absolute path to your clone      (e.g. /Users/you/code/all-my-agents-web)
+    __NODE_PATH__   absolute path to the node binary (e.g. /opt/homebrew/bin/node)
+    __LOG_PATH__    absolute path to the log file    (e.g. /Users/you/Library/Logs/all-my-agents-web.log)
+
+  The PATH environment variable is NOT optional. launchd gives a job a minimal
+  PATH, and without this entry `tailscale` is not found, so peer auto-discovery
+  fails silently: the server starts, but the mesh is empty and nothing says why.
+
+  Install:
+
+    cp setup/launchd-example.plist ~/Library/LaunchAgents/com.allmyagents-web.plist
+    launchctl load ~/Library/LaunchAgents/com.allmyagents-web.plist
+
+  Restart after a code change (do NOT use `kill`; launchd restarts the job
+  anyway and you would lose the session list):
+
+    launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.allmyagents-web</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__NODE_PATH__</string>
+        <string>__REPO_PATH__/server.js</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__REPO_PATH__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ExitTimeOut</key>
+    <integer>20</integer>
+    <key>StandardOutPath</key>
+    <string>__LOG_PATH__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG_PATH__</string>
+</dict>
+</plist>

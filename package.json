@@ -2,7 +2,16 @@
   "name": "all-my-agents",
   "version": "1.0.0",
   "description": "Web interface for managing AI coding agent sessions across machines",
+  "license": "MIT",
+  "author": "Andrew Mackenzie",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/amack87/all-my-agents-web.git"
+  },
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",

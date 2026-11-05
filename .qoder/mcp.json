@@ -6,7 +6,6 @@
         "code-review-graph",
         "serve"
       ],
-      "cwd": "/Users/andy/Repos/all-my-agents-web",
       "type": "stdio"
     }
   }
