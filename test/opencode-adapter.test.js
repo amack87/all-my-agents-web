@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import { AmaStatusPlugin } from "../integrations/opencode/ama-status.js";
 
-const { canonicalBusEvent, sessionIdFromBusProps, resolveBaseUrl, HOOK_EVENTS } =
+const { canonicalBusEvent, sessionIdFromBusProps, resolveBaseUrl, resolveToken, buildBody, HOOK_EVENTS } =
   AmaStatusPlugin.helpers;
 
 test("bus events map to the canonical status vocabulary", () => {
@@ -87,4 +87,25 @@ test("base url defaults to the standard AMA port", () => {
 
 test("the module exposes exactly one plugin function for the loader", async () => {
   assert.equal(typeof AmaStatusPlugin, "function");
+});
+test("the surface token is read from the pane environment", () => {
+  assert.equal(resolveToken({ AMA_SURFACE_TOKEN: "abc123" }), "abc123");
+  assert.equal(resolveToken({}), null);
+  assert.equal(resolveToken({ AMA_SURFACE_TOKEN: "" }), null);
+  assert.equal(resolveToken(undefined), null);
+});
+
+test("the event body carries the surface token when there is one", () => {
+  assert.deepEqual(buildBody("working", "ses_1", "abc123"), {
+    event: "working",
+    sessionId: "ses_1",
+    surfaceToken: "abc123",
+  });
+});
+
+test("the event body omits the surface token when there is none", () => {
+  assert.deepEqual(buildBody("working", "ses_1", null), {
+    event: "working",
+    sessionId: "ses_1",
+  });
 });

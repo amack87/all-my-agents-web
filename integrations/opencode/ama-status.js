@@ -60,13 +60,31 @@ function sessionIdFromBusProps(event) {
   return null;
 }
 
-function resolveBaseUrl(env = globalThis.process?.env ?? {}) {
-  if (env.ALL_MY_AGENTS_URL) return String(env.ALL_MY_AGENTS_URL).replace(/\/+$/, "");
-  return `http://127.0.0.1:${env.ALL_MY_AGENTS_PORT ?? 3456}`;
+function resolveBaseUrl(env) {
+  if (env?.ALL_MY_AGENTS_URL) return String(env.ALL_MY_AGENTS_URL).replace(/\/+$/, "");
+  return `http://127.0.0.1:${env?.ALL_MY_AGENTS_PORT ?? 3456}`;
+}
+
+// The pane's surface token. AMA exports it into the pane it launches, so an
+// agent running in an AMA-managed pane can name itself exactly, instead of
+// being identified by a session id that anything else could guess.
+function resolveToken(env) {
+  const token = env?.AMA_SURFACE_TOKEN;
+  return typeof token === "string" && token !== "" ? token : null;
+}
+
+// The body AMA's event endpoint accepts: an event, the session it is about,
+// and the surface token when the agent has one.
+function buildBody(event, sessionId, token) {
+  const body = { event, sessionId };
+  if (token) body.surfaceToken = token;
+  return body;
 }
 
 export const AmaStatusPlugin = async () => {
-  const baseUrl = resolveBaseUrl();
+  const env = globalThis.process?.env ?? {};
+  const baseUrl = resolveBaseUrl(env);
+  const token = resolveToken(env);
 
   const started = new Set();
   const chains = new Map();
@@ -78,7 +96,7 @@ export const AmaStatusPlugin = async () => {
       await fetch(`${baseUrl}/api/events`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ event, sessionId }),
+        body: JSON.stringify(buildBody(event, sessionId, token)),
         signal: controller.signal,
       });
     } catch {
@@ -152,5 +170,7 @@ AmaStatusPlugin.helpers = {
   canonicalBusEvent,
   sessionIdFromBusProps,
   resolveBaseUrl,
+  resolveToken,
+  buildBody,
   HOOK_EVENTS,
 };

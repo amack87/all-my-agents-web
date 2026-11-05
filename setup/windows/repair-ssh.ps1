@@ -19,7 +19,14 @@ param(
     # Skip the sshd restart. sshd re-reads authorized_keys on every
     # authentication attempt, so the key fix alone restores access; the restart
     # is only so a freshly written sshd_config takes effect.
-    [switch]$NoRestart
+    [switch]$NoRestart,
+    # Refuse to write the key unless it hashes to this fingerprint. The key is
+    # fetched over plain HTTP from the bridge, so anything local could squat
+    # that port and serve a key of its own — which the VM would then trust.
+    # Pass the Mac's own fingerprint to close that hole:
+    #   ssh-keygen -lf ~/.ssh/ama_windows_ed25519.pub | awk '{print $2}'
+    # which prints SHA256:<base64>.
+    [string]$ExpectedFingerprint = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,6 +55,7 @@ if (-not $MacPublicKey -or $MacPublicKey -notmatch '^ssh-ed25519\s+\S+') {
     Write-Host "  ERROR: no usable public key (expected an 'ssh-ed25519 <base64>' line)" -ForegroundColor Red
     exit 2
 }
+$fingerprint = ''
 try {
     # SHA256::HashData is .NET 5+ only; Windows PowerShell 5.1 is .NET
     # Framework. Use the older Create()/ComputeHash() pair, and never let the
@@ -59,9 +67,28 @@ try {
     } finally {
         $sha.Dispose()
     }
-    Write-Host "  key fingerprint: $fingerprint"
+    Write-Host "  key fingerprint: SHA256:$fingerprint"
 } catch {
     Write-Host "  (fingerprint unavailable: $($_.Exception.Message))" -ForegroundColor Yellow
+}
+
+if ($ExpectedFingerprint) {
+    # Compare only the hex, so "SHA256:ab:cd" and "abcd" both work.
+    $expected = ($ExpectedFingerprint -replace '^SHA256:', '' -replace '[^0-9a-fA-F]', '').ToLower()
+    $actual = ($fingerprint -replace '[^0-9a-fA-F]', '').ToLower()
+    if (-not $actual) {
+        Write-Host "  ERROR: could not hash the key, so it cannot be verified" -ForegroundColor Red
+        Write-Host "         refusing to write an unverified key" -ForegroundColor Red
+        exit 3
+    }
+    if ($expected -ne $actual) {
+        Write-Host "  ERROR: the key does not match the expected fingerprint" -ForegroundColor Red
+        Write-Host "         expected SHA256:$expected" -ForegroundColor Red
+        Write-Host "         actual   SHA256:$actual" -ForegroundColor Red
+        Write-Host "         refusing to write it" -ForegroundColor Red
+        exit 3
+    }
+    Write-Host "  fingerprint matches the expected value" -ForegroundColor Green
 }
 
 Write-Host "=== Writing authorized_keys ===" -ForegroundColor Cyan
