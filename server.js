@@ -10,6 +10,7 @@ import os from "node:os";
 import WebSocket from "ws";
 import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache, discoverSelfMagicDnsName } from "./mesh.js";
 import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
+import { createInbox } from "./ws-inbox.js";
 import {
   buildLocalAuthorities,
   buildPeerAuthorities,
@@ -973,45 +974,28 @@ app.get("/api/claude-sessions", async (_req, res) => {
 // Uses node-pty (beta) for proper PTY allocation
 import pty from "node-pty";
 
-app.ws("/ws/terminal/:target", async (ws, req) => {
+app.ws("/ws/terminal/:target", (ws, req) => {
   const target = req.params.target;
   log("INFO", "WS connect", { target, remoteAddr: req.ip });
 
-  if (!await isAllowedRequestOrigin(req)) {
-    log("WARN", "WS refused: origin not allowed", { target, origin: req.headers.origin });
-    ws.close();
-    return;
-  }
-
-  if (!TMUX_TARGET_RE.test(target)) {
-    ws.send(JSON.stringify({ type: "error", message: "Invalid session target" }));
-    ws.close();
-    return;
-  }
-  terminalClients.add(ws);
-
-  // Heartbeat: server pings every 30s, terminates if no pong within 10s
-  let alive = true;
-  const heartbeat = setInterval(() => {
-    if (!alive) {
-      log("WARN", "WS pong timeout, terminating", { target });
-      clearInterval(heartbeat);
-      ws.terminate();
-      return;
-    }
-    alive = false;
-    ws.ping();
-  }, 30_000);
-  ws.on("pong", () => { alive = true; });
+  // The client's first frame is its resize, and that frame is the only thing
+  // that tells us how big to make the PTY. It can arrive before the origin
+  // check below has finished, so the message listener is attached
+  // synchronously and every frame goes into an inbox until the handler is
+  // ready. A frame that arrives while no listener is attached is dropped by
+  // the socket for good, and a dropped resize means a PTY that is never
+  // spawned — a terminal that stays black until the user hits reconnect.
+  const inbox = createInbox();
+  let ptyProcess = null;
+  let heartbeat = null;
 
   // Strip TMUX env var so tmux attach works when server runs inside tmux
   const cleanEnv = { ...process.env, TERM: "xterm-256color", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
   delete cleanEnv.TMUX;
   delete cleanEnv.TMUX_PANE;
 
-  // Wait for client to send initial resize before spawning PTY,
-  // so tmux attaches at the correct size from the start
-  let ptyProcess = null;
+  // Frames that arrived before the PTY existed. They are replayed once it
+  // does, so nothing typed in the gap is lost.
   let pendingMessages = [];
 
   function spawnPty(cols, rows) {
@@ -1073,25 +1057,30 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
     }
   }
 
-  ws.on("message", (msg) => {
+  // One path for every frame, whether it arrives now or is replayed later.
+  function receiveFrame(str) {
     if (ptyProcess) {
-      handleMessage(msg.toString());
-    } else {
-      // Buffer until PTY spawns (waiting for initial resize)
-      const str = msg.toString();
-      try {
-        const parsed = JSON.parse(str);
-        if (parsed.type === "resize") {
-          spawnPty(parsed.cols, parsed.rows);
-          return;
-        }
-      } catch { /* not JSON */ }
-      pendingMessages.push(str);
+      handleMessage(str);
+      return;
     }
+    try {
+      const parsed = JSON.parse(str);
+      if (parsed.type === "resize") {
+        spawnPty(parsed.cols, parsed.rows);
+        return;
+      }
+    } catch { /* not JSON */ }
+    pendingMessages.push(str);
+  }
+
+  // Attached before anything is awaited, so no frame can be lost.
+  ws.on("message", (msg) => {
+    const str = msg.toString();
+    if (inbox.offer(str)) receiveFrame(str);
   });
 
   ws.on("close", (code, reason) => {
-    clearInterval(heartbeat);
+    if (heartbeat) clearInterval(heartbeat);
     terminalClients.delete(ws);
     log("INFO", "WS disconnect", { target, code, reason: reason?.toString() });
     if (ptyProcess) {
@@ -1102,6 +1091,52 @@ app.ws("/ws/terminal/:target", async (ws, req) => {
       }, 500);
     }
   });
+
+  (async () => {
+    if (!await isAllowedRequestOrigin(req)) {
+      log("WARN", "WS refused: origin not allowed", { target, origin: req.headers.origin });
+      ws.close();
+      return;
+    }
+
+    if (!TMUX_TARGET_RE.test(target)) {
+      ws.send(JSON.stringify({ type: "error", message: "Invalid session target" }));
+      ws.close();
+      return;
+    }
+    // The client may already be gone — it opened, sent its resize and left
+    // while the origin check was running.
+    if (ws.readyState !== 1) return;
+    terminalClients.add(ws);
+
+    // Heartbeat: server pings every 30s, terminates if no pong within 10s
+    let alive = true;
+    heartbeat = setInterval(() => {
+      if (!alive) {
+        log("WARN", "WS pong timeout, terminating", { target });
+        clearInterval(heartbeat);
+        ws.terminate();
+        return;
+      }
+      alive = false;
+      ws.ping();
+    }, 30_000);
+    ws.on("pong", () => { alive = true; });
+
+    // Replay whatever arrived while the checks were running. The first frame
+    // is usually the resize, which is what spawns the PTY.
+    for (const msg of inbox.open()) {
+      receiveFrame(msg);
+    }
+
+    // Belt and braces: a client that never sends a resize would otherwise
+    // leave the pane attached to nothing, and black, for good.
+    setTimeout(() => {
+      if (!ptyProcess && ws.readyState === 1) {
+        spawnPty(80, 24);
+      }
+    }, 3000).unref();
+  })();
 });
 
 // --- Agent Detection ---
@@ -1434,96 +1469,112 @@ app.post("/api/proxy/:peerHost/sessions/:name/rename", async (req, res) => {
 });
 
 // WebSocket proxy: terminal on a peer machine
-app.ws("/ws/proxy/:peerHost/:target", async (clientWs, req) => {
-  const config = await resolveConfig();
+app.ws("/ws/proxy/:peerHost/:target", (clientWs, req) => {
   const peerHost = req.params.peerHost;
   const target = req.params.target;
   log("INFO", "WS proxy connect", { peer: peerHost, target, remoteAddr: req.ip });
 
-  if (!await isAllowedRequestOrigin(req)) {
-    log("WARN", "WS proxy refused: origin not allowed", { peer: peerHost, origin: req.headers.origin });
-    clientWs.close();
-    return;
-  }
-
-  if (!PEER_HOST_RE.test(peerHost) || !config.peers.some((p) => `${p.host}:${p.port || PORT}` === peerHost)) {
-    clientWs.send(JSON.stringify({ type: "error", message: "Invalid or unauthorized peer" }));
-    clientWs.close();
-    return;
-  }
-
-  // Heartbeat on client-facing side of the proxy
-  let proxyAlive = true;
-  const proxyHeartbeat = setInterval(() => {
-    if (!proxyAlive) {
-      log("WARN", "WS proxy pong timeout", { peer: peerHost, target });
-      clearInterval(proxyHeartbeat);
-      clientWs.terminate();
-      return;
-    }
-    proxyAlive = false;
-    clientWs.ping();
-  }, 30_000);
-  clientWs.on("pong", () => { proxyAlive = true; });
-
-  const remoteUrl = `ws://${peerHost}/ws/terminal/${encodeURIComponent(target)}`;
-  let remoteWs;
-
-  try {
-    remoteWs = new WebSocket(remoteUrl, { handshakeTimeout: 5000 });
-  } catch {
-    clientWs.send(JSON.stringify({ type: "error", message: "Failed to connect to peer" }));
-    clientWs.close();
-    return;
-  }
-
-  let remoteOpen = false;
+  // Same reason as the local terminal: the listener is attached before
+  // anything is awaited, so the client's first frame cannot be dropped.
+  const inbox = createInbox();
   const buffered = [];
   const MAX_BUFFER = 64;
+  let remoteOpen = false;
+  let remoteWs = null;
+  let proxyHeartbeat = null;
 
-  remoteWs.on("open", () => {
-    remoteOpen = true;
-    for (const msg of buffered) {
-      remoteWs.send(msg);
+  function forward(str) {
+    if (remoteOpen && remoteWs && remoteWs.readyState === 1) {
+      remoteWs.send(str);
+    } else if (!remoteOpen && buffered.length < MAX_BUFFER) {
+      buffered.push(str);
     }
-    buffered.length = 0;
-  });
-
-  remoteWs.on("message", (data) => {
-    if (clientWs.readyState === 1) {
-      clientWs.send(data.toString());
-    }
-  });
-
-  remoteWs.on("close", () => {
-    if (clientWs.readyState === 1) {
-      clientWs.close();
-    }
-  });
-
-  remoteWs.on("error", (err) => {
-    log("ERROR", "Mesh proxy remote error", { peer: peerHost, error: err.message });
-    if (clientWs.readyState === 1) {
-      clientWs.send(JSON.stringify({ type: "error", message: `Remote: ${err.message}` }));
-      clientWs.close();
-    }
-  });
+  }
 
   clientWs.on("message", (msg) => {
-    if (remoteOpen && remoteWs.readyState === 1) {
-      remoteWs.send(msg.toString());
-    } else if (!remoteOpen && buffered.length < MAX_BUFFER) {
-      buffered.push(msg.toString());
-    }
+    const str = msg.toString();
+    if (inbox.offer(str)) forward(str);
   });
 
   clientWs.on("close", (code, reason) => {
-    clearInterval(proxyHeartbeat);
+    if (proxyHeartbeat) clearInterval(proxyHeartbeat);
     log("INFO", "WS proxy disconnect", { peer: peerHost, target, code, reason: reason?.toString() });
-    if (remoteWs.readyState === 1) {
+    if (remoteWs && remoteWs.readyState === 1) {
       remoteWs.close();
     }
   });
+
+  (async () => {
+    const config = await resolveConfig();
+
+    if (!await isAllowedRequestOrigin(req)) {
+      log("WARN", "WS proxy refused: origin not allowed", { peer: peerHost, origin: req.headers.origin });
+      clientWs.close();
+      return;
+    }
+
+    if (!PEER_HOST_RE.test(peerHost) || !config.peers.some((p) => `${p.host}:${p.port || PORT}` === peerHost)) {
+      clientWs.send(JSON.stringify({ type: "error", message: "Invalid or unauthorized peer" }));
+      clientWs.close();
+      return;
+    }
+
+    // Heartbeat on client-facing side of the proxy
+    let proxyAlive = true;
+    proxyHeartbeat = setInterval(() => {
+      if (!proxyAlive) {
+        log("WARN", "WS proxy pong timeout", { peer: peerHost, target });
+        clearInterval(proxyHeartbeat);
+        clientWs.terminate();
+        return;
+      }
+      proxyAlive = false;
+      clientWs.ping();
+    }, 30_000);
+    clientWs.on("pong", () => { proxyAlive = true; });
+
+    const remoteUrl = `ws://${peerHost}/ws/terminal/${encodeURIComponent(target)}`;
+    try {
+      remoteWs = new WebSocket(remoteUrl, { handshakeTimeout: 5000 });
+    } catch {
+      clientWs.send(JSON.stringify({ type: "error", message: "Failed to connect to peer" }));
+      clientWs.close();
+      return;
+    }
+
+    remoteWs.on("open", () => {
+      remoteOpen = true;
+      for (const msg of buffered) {
+        remoteWs.send(msg);
+      }
+      buffered.length = 0;
+    });
+
+    remoteWs.on("message", (data) => {
+      if (clientWs.readyState === 1) {
+        clientWs.send(data.toString());
+      }
+    });
+
+    remoteWs.on("close", () => {
+      if (clientWs.readyState === 1) {
+        clientWs.close();
+      }
+    });
+
+    remoteWs.on("error", (err) => {
+      log("ERROR", "Mesh proxy remote error", { peer: peerHost, error: err.message });
+      if (clientWs.readyState === 1) {
+        clientWs.send(JSON.stringify({ type: "error", message: `Remote: ${err.message}` }));
+        clientWs.close();
+      }
+    });
+
+    // Replay whatever the client sent while the checks were running.
+    for (const msg of inbox.open()) {
+      forward(msg);
+    }
+  })();
 });
 
 // --- Health & Self-Healing ---

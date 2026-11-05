@@ -32,6 +32,7 @@ launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
 - **origin-allowlist.js** - Pure builder for the browser-origin allowlist.
 - **session-registry.js** - Pure reconciler for the on-disk active-session registry.
 - **restore-plan.js** - Pure builder for the boot-time restore plan.
+- **ws-inbox.js** - Pure mailbox for websocket frames that arrive before the handler is ready.
 - **public/app.js** - Frontend SPA. xterm.js terminals, session list, speedrun mode, zoom controls.
 - **public/sidebar-sync.js** - Pure resolution rules for the sidebar group/order sync. The server imports it too, so both sides resolve the same way.
 - **public/session-order.js** - Pure sidebar order model (groups, ungrouped region, manual order).
@@ -46,6 +47,7 @@ launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
 - **No HTTPS**: There is no transport encryption. The trusted-source gate, not Tailscale isolation, is what keeps port 3456 off the public internet. Do not weaken the gate to make something reachable.
 - **The pane is a shell**: a launch command is typed into the pane, never installed as the pane's initial process — otherwise an agent's `/exit` closes the window and destroys the tmux session, taking the sidebar tile with it. See `docs/adr/0004-pane-is-a-shell.md`.
 - **Origin allowlist**: a request carrying an `Origin` header is refused (403) unless the origin is this machine's own name, a configured mesh peer, or this machine's **full** MagicDNS name — machine *and* tailnet, matched whole, never by prefix (another tailnet can publish `<this-machine>.<their-tailnet>.ts.net`) — and the **port** matches too. WebSocket upgrades are checked the same way, because CORS does not apply to them. Never widen this to a wildcard; a page on another site must not be able to drive the local server. See `docs/adr/0005-origin-allowlist.md`.
+- **Websocket listeners attach before any `await`**: the client's first frame is its resize, and that frame is the only thing that spawns the PTY. A frame that arrives while no `message` listener is attached is dropped by the socket for good, so the listener goes on synchronously and the early frames go into `ws-inbox.js` until the handler is ready. A dropped resize means a terminal that stays black until the user hits reconnect.
 - **No authentication**: the API and the terminal are unauthenticated. Anything that can reach the server can drive a terminal, so the trusted-source gate and the origin allowlist are the only defences. Do not relax either to make something reachable.
 
 ## Launch commands & targets
