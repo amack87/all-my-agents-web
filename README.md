@@ -161,6 +161,16 @@ Newer opencode builds read `~/.config/opencode/plugins/`; a project-local
 fails open — if the server is down, opencode is unaffected and the server
 falls back to screen detection.
 
+**opencode 1.19 and later load a plugin's _default_ export.** A plugin file
+with only named exports is rejected with `Plugin must export a default
+definition with an id and an effect or setup function`, and opencode says
+nothing about it in the UI — the failure is only in
+`~/.local/share/opencode/log/opencode.log`. The adapter in this repo exports
+both ways, so it loads on every version. If you write your own plugin, do the
+same: `export default MyPlugin` next to the named export.
+
+See `docs/adr/0008-opencode-plugins-export-a-default.md`.
+
 It posts to the local server (`ALL_MY_AGENTS_PORT`, default `3456`). To point
 it elsewhere, set `ALL_MY_AGENTS_URL` (e.g. `http://100.x.x.x:3456`) in the
 environment opencode runs in.
@@ -168,6 +178,42 @@ environment opencode runs in.
 If the pane was launched by AMA, the adapter also sends the pane's surface
 token, so the server identifies the session exactly instead of matching a
 session id that anything else could guess.
+
+### Superwhisper notifications (per session)
+
+The [Superwhisper](https://github.com/superwhisper/opencode-superwhisper)
+plugin pops up whenever an agent finishes. That is helpful on one session and
+noise on the other nine, so `integrations/opencode/superwhisper-optin.js`
+makes it a per-session choice.
+
+```bash
+cp integrations/opencode/superwhisper-optin.js ~/.config/opencode/plugin/
+```
+
+Then, inside a session, run `/enable-superwhisper` to be alerted for that
+session and `/disable-superwhisper` to stop. The choice lasts for that
+session and survives a restart. A session you have not enabled is muted from
+its first prompt.
+
+It works by writing the marker file the Superwhisper plugin already reads
+(`/tmp/superwhisper-agent/disabled-<session id>`), so the third-party plugin
+is never patched and keeps working after an update. The two slash commands
+have to be registered in opencode's config as well:
+
+```json
+{
+  "command": {
+    "enable-superwhisper": {
+      "description": "Alert me with Superwhisper when this session finishes",
+      "template": "Reply with the single word: superwhisper on"
+    },
+    "disable-superwhisper": {
+      "description": "Stop Superwhisper alerts for this session",
+      "template": "Reply with the single word: superwhisper off"
+    }
+  }
+}
+```
 
 ### Agent status adapter (Claude Code)
 
