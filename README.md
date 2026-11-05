@@ -247,7 +247,7 @@ Speedrun prioritizes sessions needing input across all machines. After you respo
 - WebSocket proxy buffers are capped to prevent memory exhaustion
 - Connections are accepted only from trusted sources — loopback, Tailscale, and the VM bridge — checked at the TCP level before any HTTP or WebSocket handling sees them. The server listens on `0.0.0.0` so it keeps working when Tailscale arrives late, but a connection from anywhere else is dropped. See [ADR 0003](docs/adr/0003-trusted-source-gate.md).
 - There is no HTTPS. The trusted-source gate, not transport encryption, is what keeps port 3456 off the public internet.
-- Cross-origin requests are refused unless the `Origin` is this machine's own name, a configured mesh peer, or this machine's MagicDNS name — and the port has to match too. WebSocket upgrades are checked the same way, because CORS does not apply to them, so a page on another site cannot drive the local server. See [ADR 0005](docs/adr/0005-origin-allowlist.md).
+- Cross-origin requests are refused unless the `Origin` is this machine's own name, a configured mesh peer, or this machine's **full** MagicDNS name — machine and tailnet, matched whole, because another tailnet can publish a name that starts with the same short hostname — and the port has to match too. WebSocket upgrades are checked the same way, because CORS does not apply to them, so a page on another site cannot drive the local server. See [ADR 0005](docs/adr/0005-origin-allowlist.md).
 - There is no authentication. Anything that can reach the server can drive a terminal, so the trusted-source gate and the origin allowlist are the only defences — do not weaken either to make something reachable.
 
 ## Known Issues

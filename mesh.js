@@ -20,6 +20,9 @@ let configCacheTime = 0;
 let cachedPeers = null;
 let peersCacheTime = 0;
 
+let cachedSelfDnsName;
+let selfDnsCacheTime = 0;
+
 /** Peers seen recently via successful discovery, keyed by "host:port" */
 const recentlySeenPeers = new Map();
 
@@ -60,6 +63,34 @@ export async function loadMeshConfig() {
     configCacheTime = now;
     return cachedConfig;
   }
+}
+
+/**
+ * This machine's own MagicDNS name, e.g. "my-laptop.tail1234.ts.net".
+ *
+ * The whole name is what identifies it. The tailnet segment is chosen by
+ * whoever owns the tailnet, so another tailnet can publish a name that starts
+ * with the same short hostname — only the full name, tailnet included, is
+ * unambiguous. Returns null when Tailscale cannot be asked, so callers fail
+ * closed rather than trusting a guess.
+ */
+export async function discoverSelfMagicDnsName() {
+  const now = Date.now();
+  if (cachedSelfDnsName !== undefined && now - selfDnsCacheTime < DISCOVERY_CACHE_TTL_MS) {
+    return cachedSelfDnsName;
+  }
+  selfDnsCacheTime = now;
+  try {
+    const { stdout } = await execFileAsync("tailscale", ["status", "--json"], {
+      timeout: 5000,
+    });
+    const dnsName = JSON.parse(stdout)?.Self?.DNSName;
+    cachedSelfDnsName = typeof dnsName === "string" ? dnsName : null;
+  } catch {
+    // Tailscale is not available: no MagicDNS name is trusted.
+    cachedSelfDnsName = null;
+  }
+  return cachedSelfDnsName;
 }
 
 /**

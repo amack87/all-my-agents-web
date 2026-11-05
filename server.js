@@ -8,7 +8,7 @@ import { access, readFile, readdir } from "node:fs/promises";
 import { accessSync, createWriteStream, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import WebSocket from "ws";
-import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache } from "./mesh.js";
+import { resolveConfig, fetchAllMeshSessions, clearDiscoveryCache, discoverSelfMagicDnsName } from "./mesh.js";
 import { reconcileRegistry, REGISTRY_VERSION } from "./session-registry.js";
 import {
   buildLocalAuthorities,
@@ -79,8 +79,15 @@ const LOCAL_AUTHORITIES = buildLocalAuthorities({
   port: PORT,
 });
 
-// The short hostname, used to recognise this machine's MagicDNS name.
-const LOCAL_SHORT_NAME = os.hostname().split(".")[0].toLowerCase();
+// This machine's own MagicDNS name, in full — machine AND tailnet. Only the
+// whole name identifies it: the tailnet segment is chosen by whoever owns the
+// tailnet, so another tailnet can publish a name starting with the same short
+// hostname and a page served from there must not be trusted with this API.
+// When Tailscale cannot be asked, no MagicDNS name is trusted at all.
+async function localMagicDnsNames() {
+  const dnsName = await discoverSelfMagicDnsName();
+  return dnsName ? new Set([dnsName]) : new Set();
+}
 
 let peerAuthorities = new Set();
 let peerAuthoritiesAt = 0;
@@ -105,7 +112,7 @@ async function isAllowedOrigin(origin) {
   return isOriginAllowed(origin, {
     localAuthorities: LOCAL_AUTHORITIES,
     peerAuthorities: await knownPeerAuthorities(),
-    magicDnsShortName: LOCAL_SHORT_NAME,
+    magicDnsNames: await localMagicDnsNames(),
     magicDnsPort: PORT,
   });
 }

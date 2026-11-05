@@ -14,6 +14,8 @@ The server answered with `Access-Control-Allow-Origin: *`. That is the worst of 
 
 CORS is a response-reading control, not an authorization control. Something else has to decide who may make the request in the first place.
 
+The first version of this decision had a hole in it, and it was found before the code was pushed. The MagicDNS rule matched any name that *started with* the machine's short name and ended in `.ts.net` — without looking at the tailnet segment. Tailscale tailnet names are chosen by whoever owns the tailnet, so an attacker could create their own tailnet, name a node after this machine, and serve a page from `amer-cy4dq52l6c.evil.ts.net`. The server accepted that origin and the attacker's page created a session running a command on this machine: the drive-by remote code execution this decision exists to prevent. The rule now matches the machine's own full MagicDNS name and nothing else.
+
 ## Decision
 
 A request is accepted when it carries **no** `Origin` header, or when its `Origin` names an authority the server already knows.
@@ -21,7 +23,7 @@ A request is accepted when it carries **no** `Origin` header, or when its `Origi
 - **No Origin ⇒ allowed.** Command-line clients, the agent status adapters and health checks are not browsers and send none.
 - **Local authorities.** The machine's hostname, its short form, the loopback spellings and every local interface address, each at the server's own port.
 - **Peer authorities.** Each configured mesh peer's `host:port`, in the same form the browser client builds, so the two agree. The web UI fails over to a peer by calling it cross-origin, so peers must be allowed.
-- **This machine's MagicDNS name**, matched by rule rather than by enumeration: the name must start with the machine's short name *and* end in `.ts.net`. A name that merely starts with the short name could be the attacker's own domain.
+- **This machine's MagicDNS name**, matched by its **full** name — machine *and* tailnet — and nothing else. A tailnet names a machine `<machine>.<tailnet>.ts.net`, and both halves are chosen by whoever owns the tailnet. Matching a prefix would let any other tailnet publish `<this-machine>.<their-tailnet>.ts.net`, a name that resolves to a host the attacker controls; matching the whole name does not, because the tailnet segment is the part that cannot be guessed. The name is read from Tailscale itself (`Self.DNSName`), and when Tailscale cannot be asked, no MagicDNS name is trusted at all.
 - **The port is part of the match.** `http://localhost:9999` is a different server. A malicious package that starts a web server on another local port must not be able to drive the API on this one.
 - **The `Origin`, not the `Host`, is the authority.** Under DNS rebinding the browser sends `Host: attacker.example` and `Origin: http://attacker.example`: the two agree with each other, and neither names this machine, so the check refuses it.
 
