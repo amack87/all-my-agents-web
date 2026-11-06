@@ -7,7 +7,7 @@ import { Unicode11Addon } from "https://cdn.jsdelivr.net/npm/@xterm/addon-unicod
 // --- Sidebar ordering (pure, DOM-free) ---
 import { moveSession, moveGroup, resolveOrder } from "./session-order.js";
 import { pickWinner, isSafeGroupName, sanitizeSidebarOrder } from "./sidebar-sync.js";
-import { resizeFrame } from "./terminal-size.js";
+import { resizeFrame, claimFrame, CLAIM_HEARTBEAT_MS, shouldHeartbeat, isTouched } from "./terminal-size.js";
 import { esc } from "./escape.js";
 
 // --- Theme Helpers ---
@@ -245,6 +245,9 @@ const state = {
   // whether the grid may have gone stale while the page was not looked at.
   terminalSize: null,
   terminalSizeStale: false,
+  claimTimer: null,
+  lastTouchClaimAt: 0,
+  lastInputAt: 0,
 };
 
 // --- Session Groups (localStorage-backed, synced via the server) ---
@@ -1176,7 +1179,11 @@ function updatePositionIndicator() {
 // stale - the phone's size, when the user moves to the desktop.
 //
 // So: re-fit on the way back in (visibility, focus) and before the first
-// keystroke after that, and tell the server only when the size really changed.
+// keystroke after that, and tell the server the new size when it changed.
+//
+// A size that did not change never reaches tmux, so on its own it cannot put
+// the shared pane back. That is what the claim frame is for: it says "this is
+// the device being looked at", and the server asks tmux for the pane.
 
 // Fit the terminal to its container and report the grid it ended up with.
 function fitGrid(fitAddon, term) {
@@ -1196,15 +1203,76 @@ function pushResize(cols, rows) {
   return true;
 }
 
-// Re-fit the terminal and tell the server when the size changed.
-function syncTerminalSize() {
+// Tell the server "this is the device being looked at, and this is my grid".
+// The grid travels with the claim because it may have changed while the page
+// was in the background.
+function pushClaim(cols, rows, { touch = false } = {}) {
+  if (state.ws?.readyState !== 1) return false;
+  const frame = claimFrame({ cols, rows }, { touch });
+  if (!frame) return false;
+  state.ws.send(JSON.stringify(frame));
+  state.terminalSize = { cols, rows };
+  return true;
+}
+
+// Re-fit the terminal and tell the server we are the device being looked at.
+function syncTerminalSize({ touch = false } = {}) {
   const term = state.terminal;
   const fitAddon = state.fitAddon;
   if (!term || !fitAddon) return;
   const size = fitGrid(fitAddon, term);
   state.terminalSizeStale = false;
-  const frame = resizeFrame(state.terminalSize, size);
-  if (frame) pushResize(frame.cols, frame.rows);
+  pushClaim(size.cols, size.rows, { touch });
+}
+
+// The device being looked at keeps saying so.
+//
+// tmux hands a session's shared pane to the client whose size changed last,
+// so a device that comes back - or a phone that wakes up - can take the pane
+// away, and the pane keeps that size until somebody asks for it back. The
+// claim repeats while this page is in front; a page in the background never
+// claims, because nobody is looking at it.
+function startClaimHeartbeat() {
+  stopClaimHeartbeat();
+  state.claimTimer = setInterval(() => {
+    const term = state.terminal;
+    const fitAddon = state.fitAddon;
+    if (!term || !fitAddon) return;
+    if (!shouldHeartbeat({
+      open: true,
+      visible: document.visibilityState === "visible",
+      focused: document.hasFocus(),
+    })) return;
+    const size = fitGrid(fitAddon, term);
+    pushClaim(size.cols, size.rows, { touch: isTouched(state.lastInputAt) });
+  }, CLAIM_HEARTBEAT_MS);
+}
+
+function stopClaimHeartbeat() {
+  if (state.claimTimer) {
+    clearInterval(state.claimTimer);
+    state.claimTimer = null;
+  }
+}
+
+// A claim that follows an interaction is a touch: the user has just said
+// which device this is, so it wins the pane from whatever device was holding
+// it. Typing claims at most once a second - the heartbeat covers the rest,
+// and the server does real work for every claim.
+const TOUCH_CLAIM_MS = 1000;
+
+function pushTouch() {
+  // The user just used this page, so it keeps saying so for a while - the
+  // heartbeat carries the touch on too, not only this claim.
+  state.lastInputAt = Date.now();
+  const term = state.terminal;
+  const fitAddon = state.fitAddon;
+  if (!term || !fitAddon) return;
+  const now = Date.now();
+  if (now - state.lastTouchClaimAt < TOUCH_CLAIM_MS) return;
+  state.lastTouchClaimAt = now;
+  const size = fitGrid(fitAddon, term);
+  pushClaim(size.cols, size.rows, { touch: true });
 }
 
 // --- Terminal ---
@@ -1296,6 +1364,9 @@ function openTerminal(sessionName, machineHost = "local") {
   container.innerHTML = "";
   container.style.opacity = "0";
   term.open(container);
+
+  // The device being looked at keeps claiming the shared pane.
+  startClaimHeartbeat();
 
   // Short delay for DOM to settle before fitting
   requestAnimationFrame(() => {
@@ -1572,6 +1643,10 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
     // the size the browser is actually showing.
     const size = fitGrid(fitAddon, term);
     pushResize(size.cols, size.rows);
+    // This browser is the device the user is looking at, so it claims the
+    // shared pane as well - another device may have taken it in the meantime.
+    // It is a touch when the user has just opened this terminal.
+    pushClaim(size.cols, size.rows, { touch: isTouched(state.lastInputAt) });
   };
 
   ws.onmessage = (evt) => {
@@ -1631,7 +1706,7 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
       // The grid may have gone stale while the page was in the background.
       // Re-fit first, so the resize reaches tmux before the keystroke does.
       if (state.terminalSizeStale) {
-        syncTerminalSize();
+        syncTerminalSize({ touch: true });
       }
       // Auto-exit tmux copy mode when user types
       if (state.inCopyMode) {
@@ -1658,6 +1733,7 @@ function connectWebSocket(sessionName, term, fitAddon, machineHost = "local", vi
 }
 
 function cleanupTerminal() {
+  stopClaimHeartbeat();
   if (state.terminalReconnectTimer) {
     clearTimeout(state.terminalReconnectTimer);
     state.terminalReconnectTimer = null;
@@ -2494,6 +2570,14 @@ setInterval(() => {
 }, 5000);
 
 // Handle visibility change (phone lock/unlock, app switching)
+// Any interaction with the page is the user saying "this is the device I am
+// using", so it takes the shared pane from whatever device was holding it.
+// The listeners are in the capture phase so the claim is on its way before
+// the keystroke reaches the terminal.
+for (const type of ["keydown", "pointerdown", "touchstart", "wheel"]) {
+  document.addEventListener(type, () => pushTouch(), { capture: true, passive: true });
+}
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") {
     if (views.sessionList.classList.contains("active")) {
@@ -2505,8 +2589,10 @@ document.addEventListener("visibilitychange", () => {
     }
     // The page was not laid out while it was hidden, so the grid is stale:
     // re-fit it and tell the server, so the terminal is sized for the
-    // viewport it is back in.
-    syncTerminalSize();
+    // viewport it is back in. Coming back is a touch: the user just said
+    // which device this is.
+    state.lastInputAt = Date.now();
+    syncTerminalSize({ touch: true });
   } else {
     // The grid can go stale while the page is hidden (the viewport changes,
     // the tab is not laid out). Remember that, so the first keystroke after
@@ -2522,5 +2608,7 @@ window.addEventListener("blur", () => {
   state.terminalSizeStale = true;
 });
 window.addEventListener("focus", () => {
-  syncTerminalSize();
+  // The user is looking at this window again, so it takes the shared pane.
+  state.lastInputAt = Date.now();
+  syncTerminalSize({ touch: true });
 });

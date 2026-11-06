@@ -24,7 +24,9 @@ import { newSurfaceToken, buildLaunchArgs, buildLaunchInputArgs, buildLaunchSubm
 import { validateLaunchCommand, buildLaunchSpec, renderLaunchCommand } from "./launch-command.js";
 import { isTrustedConnection } from "./network-access.js";
 import { pickWinner, sanitizeSidebarOrder } from "./public/sidebar-sync.js";
-import { readSize } from "./public/terminal-size.js";
+import { readSize, CLAIM_FRAME_TYPE } from "./public/terminal-size.js";
+import { buildListClientsArgs, buildSwitchClientArgs, findClientByPid, parseClientList } from "./tmux-client.js";
+import { createLease, requestLease, releaseLease } from "./pane-lease.js";
 
 // --- Logging ---
 const LOG_DIR = process.env.ALL_MY_AGENTS_LOG_DIR || join(os.homedir(), ".local", "state", "all-my-agents");
@@ -949,6 +951,30 @@ app.get("/api/claude-sessions", async (_req, res) => {
 // Uses node-pty (beta) for proper PTY allocation
 import pty from "node-pty";
 
+// A claim is answered as soon as the tmux client behind the PTY is
+// registered. It registers a moment after the PTY is spawned, so the search
+// is repeated for a short while before the claim is given up on.
+const CLAIM_RETRY_MS = 200;
+const CLAIM_ATTEMPTS = 25;
+
+// The lease on each session's shared pane: the one connection that is allowed
+// to move it. Keyed by tmux target, because the pane belongs to the session.
+// A device that attaches - a second tab, a phone that wakes up - takes the
+// pane away from the device the user is looking at, and the pane keeps that
+// size until somebody re-asserts. The lease says who may re-assert.
+const paneLeases = new Map();
+let connectionCounter = 0;
+
+/** The lease for a target, created the first time it is asked for. */
+function leaseFor(target) {
+  let lease = paneLeases.get(target);
+  if (!lease) {
+    lease = createLease();
+    paneLeases.set(target, lease);
+  }
+  return lease;
+}
+
 app.ws("/ws/terminal/:target", (ws, req) => {
   const target = req.params.target;
   log("INFO", "WS connect", { target, remoteAddr: req.ip });
@@ -972,6 +998,19 @@ app.ws("/ws/terminal/:target", (ws, req) => {
   // Frames that arrived before the PTY existed. They are replayed once it
   // does, so nothing typed in the gap is lost.
   let pendingMessages = [];
+
+  // A claim asks tmux to give the shared window to this client. The tmux
+  // client shows up in `list-clients` a moment after the PTY is spawned, so
+  // the first attempts can miss it and are repeated for a short while.
+  let claimInFlight = false;
+  let claimQueued = false;
+  let ptyExited = false;
+
+  // This connection's name in the lease, and the server-clock time of the
+  // last time the user touched the page on this device. The server stamps
+  // the time, so two devices never have to agree on a clock.
+  const connectionId = `${target}#${++connectionCounter}`;
+  let interactedAt = null;
 
   function spawnPty(cols, rows) {
     try {
@@ -999,10 +1038,11 @@ app.ws("/ws/terminal/:target", (ws, req) => {
     });
 
     ptyProcess.onExit(({ exitCode }) => {
-      if (ws.readyState === 1) {
-        ws.send(JSON.stringify({ type: "exit", code: exitCode }));
-        ws.close();
-      }
+        ptyExited = true;
+        if (ws.readyState === 1) {
+          ws.send(JSON.stringify({ type: "exit", code: exitCode }));
+          ws.close();
+        }
     });
 
     // Flush any messages that arrived before PTY was ready
@@ -1012,6 +1052,89 @@ app.ws("/ws/terminal/:target", (ws, req) => {
     pendingMessages = [];
   }
 
+  // The tmux client behind this PTY, or null when it is not registered yet.
+  async function findOwnClient() {
+    if (!ptyProcess || ptyExited) return null;
+    const output = await tmux(...buildListClientsArgs(target));
+    return findClientByPid(parseClientList(output), ptyProcess.pid);
+  }
+
+  // Ask tmux to give the shared window to this client.
+  //
+  // tmux sizes a session's window from the client whose size last changed, so
+  // a device that comes back to the size it already had never gets the window
+  // back on its own - it has to ask for it. `switch-client` makes this client
+  // the session's current one, and the window takes its size.
+  async function claimWindow() {
+    if (claimInFlight) {
+      claimQueued = true;
+      return;
+    }
+    claimInFlight = true;
+    try {
+      for (let attempt = 1; attempt <= CLAIM_ATTEMPTS; attempt++) {
+        const client = await findOwnClient();
+        if (client) {
+          await tmux(...buildSwitchClientArgs(client.name, client.windowId));
+          return;
+        }
+        if (ptyExited) return;
+        await new Promise((resolve) => setTimeout(resolve, CLAIM_RETRY_MS));
+      }
+      log("WARN", "No tmux client to claim the window for", { target });
+    } catch (err) {
+      log("WARN", "Claiming the tmux window failed", { target, error: err.message });
+    } finally {
+      claimInFlight = false;
+      if (claimQueued) {
+        claimQueued = false;
+        claimWindow();
+      }
+    }
+  }
+
+
+  // The pane belongs to whoever holds the lease.
+  //
+  // Another device - a second tab, a phone that wakes up - can take the pane
+  // in tmux without asking, because a client that changes its size takes the
+  // pane with it. The lease says who may ask for it back.
+  function holdsPane() {
+    const lease = paneLeases.get(target);
+    return !lease || !lease.holder || lease.holder === connectionId;
+  }
+
+  // Ask for the session's shared pane, and take it when the lease allows.
+  //
+  // A touch means the user has just used this device, so it wins the pane
+  // from whatever device was holding it. A plain claim is a heartbeat: it
+  // keeps the pane as long as no other device has been touched more
+  // recently.
+  function claimPane(touch, size) {
+    if (touch) interactedAt = Date.now();
+    const lease = leaseFor(target);
+    const previousHolder = lease.holder;
+    const result = requestLease(lease, { holder: connectionId, interactedAt }, Date.now());
+    paneLeases.set(target, result.lease);
+    if (!result.granted) {
+      // The terminal still has to exist on this device, but its size must not
+      // change: in tmux a client that changes its size takes the pane.
+      if (!ptyProcess) spawnPty(size.cols, size.rows);
+      return false;
+    }
+    if (previousHolder !== result.lease.holder) {
+      log("INFO", "The tmux pane belongs to", { target, holder: result.lease.holder });
+    }
+    applySize(size);
+    claimWindow();
+    return true;
+  }
+
+  function applySize(size) {
+    if (ptyProcess) ptyProcess.resize(size.cols, size.rows);
+    else spawnPty(size.cols, size.rows);
+  }
+
   function handleMessage(msg) {
     try {
       const parsed = JSON.parse(msg);
@@ -1019,17 +1142,18 @@ app.ws("/ws/terminal/:target", (ws, req) => {
         if (ptyProcess) {
           ptyProcess.write(parsed.data);
         }
-      } else if (parsed.type === "resize") {
+      } else if (parsed.type === "resize" || parsed.type === CLAIM_FRAME_TYPE) {
         // A size the PTY cannot take is not worth acting on: node-pty throws
         // on cols/rows <= 0, and the catch below would write the raw frame
         // into the terminal.
         const size = readSize(parsed);
         if (!size) return;
-        if (ptyProcess) {
-          ptyProcess.resize(size.cols, size.rows);
-        } else {
-          // First resize — spawn PTY at correct size
-          spawnPty(size.cols, size.rows);
+        if (parsed.type === CLAIM_FRAME_TYPE) {
+          claimPane(parsed.touch === true, size);
+        } else if (holdsPane()) {
+          // In tmux a client that changes its size takes the shared pane, so
+          // only the device that holds the pane may change its size.
+          applySize(size);
         }
       }
     } catch {
@@ -1045,9 +1169,15 @@ app.ws("/ws/terminal/:target", (ws, req) => {
     }
     try {
       const parsed = JSON.parse(str);
-      if (parsed.type === "resize") {
+      if (parsed.type === "resize" || parsed.type === CLAIM_FRAME_TYPE) {
         const size = readSize(parsed);
-        if (size) spawnPty(size.cols, size.rows);
+        if (size) {
+          if (parsed.type === CLAIM_FRAME_TYPE) {
+            claimPane(parsed.touch === true, size);
+          } else {
+            spawnPty(size.cols, size.rows);
+          }
+        }
         return;
       }
     } catch { /* not JSON */ }
@@ -1064,6 +1194,10 @@ app.ws("/ws/terminal/:target", (ws, req) => {
     if (heartbeat) clearInterval(heartbeat);
     terminalClients.delete(ws);
     log("INFO", "WS disconnect", { target, code, reason: reason?.toString() });
+    // A device that is gone must not keep the lease: the pane goes to
+    // whoever asks for it next.
+    const lease = paneLeases.get(target);
+    if (lease) paneLeases.set(target, releaseLease(lease, connectionId));
     if (ptyProcess) {
       // Detach cleanly instead of killing the tmux session
       try { ptyProcess.write("\x02d"); } catch { /* ignore */ }

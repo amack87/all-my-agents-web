@@ -28,12 +28,15 @@ launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
 - **mesh.config.json** - Peer and target configuration (peers: name, host, port; targets: name, host, user, port, identityFile). Gitignored — copy from `mesh.config.example.json`.
 - **launch-command.js** - Pure builder for launch commands and launch specs: validation, ssh argv, target resolution.
 - **surface-token.js** - Per-pane capability token, plus the tmux argv that creates a pane and types a command into it.
+- **tmux-client.js** - Pure helpers for the tmux client a PTY is: parse `list-clients`, find a client by pid, build the `switch-client` argv.
+- **pane-lease.js** - Pure rules for who may move a session's shared pane: one holder per session, a touch takes the lease from a heartbeat, a lease expires when its holder stops claiming.
 - **network-access.js** - Trusted-source gate for inbound TCP connections.
 - **origin-allowlist.js** - Pure builder for the browser-origin allowlist.
 - **session-registry.js** - Pure reconciler for the on-disk active-session registry.
 - **restore-plan.js** - Pure builder for the boot-time restore plan.
 - **ws-inbox.js** - Pure mailbox for websocket frames that arrive before the handler is ready.
 - **public/app.js** - Frontend SPA. xterm.js terminals, session list, speedrun mode, zoom controls.
+- **public/terminal-size.js** - Pure terminal-grid rules shared by the browser and the server: usable sizes, when a resize is worth sending, and the claim frame.
 - **public/sidebar-sync.js** - Pure resolution rules for the sidebar group/order sync. The server imports it too, so both sides resolve the same way.
 - **public/session-order.js** - Pure sidebar order model (groups, ungrouped region, manual order).
 - **public/escape.js** - Pure HTML escaper for every value interpolated into markup.
@@ -52,6 +55,8 @@ launchctl stop com.allmyagents-web && launchctl start com.allmyagents-web
 - **No authentication**: the API and the terminal are unauthenticated. Anything that can reach the server can drive a terminal, so the trusted-source gate and the origin allowlist are the only defences. Do not relax either to make something reachable.
 - **Everything interpolated into markup is escaped**: peer-supplied session names reach `data-` attributes, and a value containing a quote closes the attribute and becomes markup — script in the AMA origin can then drive the API, and the AMA origin is allowlisted. Use `esc()` from `public/escape.js` for text *and* attribute values; it escapes quotes as well as `< > &`.
 - **A group name is never used as a raw object key**: `__proto__`, `constructor` and `prototype` cannot be stored on a plain object without changing its prototype, so such a group silently vanishes. `isSafeGroupName()` in `public/sidebar-sync.js` refuses them, and the server and the client share one normaliser (`sanitizeSidebarOrder`) so they cannot disagree about what a group is.
+- **The shared pane belongs to the device being looked at**: tmux gives the pane to the client whose size last *changed* and ignores a repeated size, so a device that comes back with an unchanged grid cannot reclaim the pane by resizing it. The browser therefore sends a `claim` frame (`{type:"claim",cols,rows}`) when it comes back — even when the grid did not change — and the server hands the window to that client with `tmux switch-client -c <client> -t <window>`, using the client's own window so it never jumps. Do not suppress claims whose size is unchanged; that is the bug this replaced. See `docs/adr/0010-the-browser-claims-the-shared-window.md`.
+- **The claim repeats, and the pane is granted by a lease**: a claim is a one-off event, and any device that attaches takes the pane (tmux sizes the window from the client that attaches) — so the device being looked at keeps claiming, every two seconds, while the page is visible and focused. A claim that follows an interaction or a return to the page is a *touch* (`touch:true` on the frame) and wins the pane from whatever device held it; a plain claim is a heartbeat. The server keeps one holder per session in `pane-lease.js` and stamps the interaction time with its own clock. A device that does not hold the lease may not change its size — in tmux a client that changes size takes the pane with it — so its size frames are ignored until it is touched. See `docs/adr/0011-the-device-being-looked-at-keeps-asserting.md`.
 
 ## Launch commands & targets
 

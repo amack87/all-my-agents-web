@@ -4,7 +4,7 @@ Date: 2026-11-05
 
 ## Status
 
-Accepted
+Superseded by [ADR-0010](0010-the-browser-claims-the-shared-window.md)
 
 ## Context
 
