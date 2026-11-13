@@ -1,3 +1,8 @@
+> **This repository has moved.** The web app now lives in the
+> [amack87/all-my-agents](https://github.com/amack87/all-my-agents) monorepo,
+> alongside the native macOS app it talks to. That repository is the place to
+> file issues and pull requests; this one is kept for its history only.
+
 # All My Agents
 
 A web interface for managing AI coding agent sessions (Claude Code, Cursor, Aider, Codex) across multiple machines. Works on both mobile and desktop, with auto-discovery of peers via Tailscale.
